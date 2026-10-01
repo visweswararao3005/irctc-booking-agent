@@ -9,9 +9,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
+import httpx
+from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, filters
+    ConversationHandler, ContextTypes, filters
 )
 from config import TELEGRAM_BOT_TOKEN
 import bot
@@ -65,6 +67,21 @@ async def run_bot():
     scheduler = BackgroundBookingWorker(app, bot.irctc_svc)
     bot.global_scheduler = scheduler
 
+async def render_keep_alive_loop():
+    """Pings the web health probe every 10 minutes to prevent Render free container from idling to sleep."""
+    external_url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("PING_URL")
+    port = os.getenv("PORT", "8000")
+    target = external_url or f"http://127.0.0.1:{port}"
+    print(f"🔄 Render 24/7 Keep-Alive watchdog active for: {target}")
+    while True:
+        await asyncio.sleep(600)  # Ping every 10 minutes
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.get(target)
+                print(f"[Keep-Alive] Pinged {target} -> status {res.status_code}")
+        except Exception:
+            pass
+
     ROUTE_PATTERN = re.compile(r"^[A-Za-z]{2,6}\s*(?:->|➔|TO|-|–|/|\s)\s*[A-Za-z]{2,6}$", re.IGNORECASE)
     TRAIN_PATTERN = re.compile(r"^\d{5}\s*-", re.IGNORECASE)
 
@@ -99,7 +116,13 @@ async def run_bot():
             bot.STATE_CARD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_name)],
             bot.STATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", bot.cancel_booking)]
+        fallbacks=[
+            CommandHandler("cancel", bot.cancel_booking),
+            CommandHandler("start", bot.start_booking),
+            CommandHandler("book", bot.start_booking),
+            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
+        ],
+        allow_reentry=True
     )
 
     # 2. Account Setup/Change Conversation Handler
@@ -112,7 +135,12 @@ async def run_bot():
             bot.STATE_SET_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_user)],
             bot.STATE_SET_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_pass)],
         },
-        fallbacks=[CommandHandler("cancel", bot.cancel_booking)]
+        fallbacks=[
+            CommandHandler("cancel", bot.cancel_booking),
+            CommandHandler("start", bot.start_booking),
+            CommandHandler("book", bot.start_booking),
+        ],
+        allow_reentry=True
     )
 
     # 3. Card Setup/Change Conversation Handler
@@ -127,13 +155,21 @@ async def run_bot():
             bot.STATE_SET_CARD_CVV: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_card_cvv)],
             bot.STATE_SET_CARD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_card_name)],
         },
-        fallbacks=[CommandHandler("cancel", bot.cancel_booking)]
+        fallbacks=[
+            CommandHandler("cancel", bot.cancel_booking),
+            CommandHandler("start", bot.start_booking),
+            CommandHandler("book", bot.start_booking),
+        ],
+        allow_reentry=True
     )
 
     # Register handlers
     app.add_handler(booking_conv)
     app.add_handler(account_conv)
     app.add_handler(card_conv)
+    app.add_handler(CommandHandler("start", bot.start_booking))
+    app.add_handler(CommandHandler("book", bot.start_booking))
+    app.add_handler(MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking))
     app.add_handler(CommandHandler("account", bot.cmd_account))
     app.add_handler(CommandHandler("reset_account", bot.cmd_reset_account))
     app.add_handler(CommandHandler("card", bot.cmd_card))
@@ -144,9 +180,22 @@ async def run_bot():
     # Fallback message handler (used for OTP capture & general messages)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_potential_otp))
 
+    async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        print(f"[ERROR] Exception while handling update: {context.error}")
+        if isinstance(update, Update) and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "⚠️ An unexpected issue occurred. Please send /start to continue.",
+                    parse_mode=None
+                )
+            except Exception:
+                pass
 
-    # Start background polling worker in asyncio task
+    app.add_error_handler(global_error_handler)
+
+    # Start background polling worker & keep-alive in asyncio tasks
     asyncio.create_task(scheduler.start())
+    asyncio.create_task(render_keep_alive_loop())
 
     print("🚀 Telegram IRCTC Booking Agent is now running and waiting for messages!")
     print("👉 Multi-user support active.")

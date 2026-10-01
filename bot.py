@@ -235,18 +235,29 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     tg_user = update.effective_user
     context.user_data.clear()
 
+    # Sanitize user name to prevent Markdown parsing crash
+    raw_name = tg_user.first_name if (tg_user and tg_user.first_name) else "Traveler"
+    safe_name = re.sub(r"[*_`\[\]]", "", raw_name).strip() or "Traveler"
+
     welcome_msg = (
-        f"🚆 *Welcome to the IRCTC AI Booking Agent, {tg_user.first_name}!*\n\n"
+        f"🚆 *Welcome to the IRCTC AI Booking Agent, {safe_name}!*\n\n"
         "I will help you search real live trains, check coach availability with fares, "
         "and continuously monitor Waiting List tickets with auto-booking.\n\n"
         "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n"
         "*(Example: `KJM-MAS` or `MAS-NLR`)*"
     )
-    await update.message.reply_text(
-        welcome_msg,
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
-    )
+    kb = ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
+    try:
+        await update.message.reply_text(
+            welcome_msg,
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+    except Exception:
+        await update.message.reply_text(
+            welcome_msg.replace("*", "").replace("`", ""),
+            reply_markup=kb
+        )
     return STATE_ROUTE
 
 def adjust_date(curr: datetime.date, delta_y: int = 0, delta_m: int = 0, delta_d: int = 0) -> datetime.date:
