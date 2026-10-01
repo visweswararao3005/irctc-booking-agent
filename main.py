@@ -1,8 +1,10 @@
 import asyncio
 import sys
 import os
+import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -68,7 +70,8 @@ async def run_bot():
         entry_points=[
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.start_booking),
-            MessageHandler(filters.Regex(r"^(?i)(hi|hello|start|book)$"), bot.start_booking)
+            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking)
+
         ],
         states={
             bot.STATE_ROUTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_route)],
