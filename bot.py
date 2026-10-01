@@ -1,0 +1,444 @@
+"""Multi-user Telegram Bot with FSM, Per-Chat IRCTC credentials, Live Pricing, and Try Now support."""
+import re
+import datetime
+from typing import Dict, Any
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
+)
+
+import storage
+from security import mask_text
+from irctc_service import IRCTCService
+
+# Global service instance
+irctc_svc = IRCTCService()
+global_scheduler = None  # Injected in main.py
+
+# Conversation States for Booking Flow
+(
+    STATE_ROUTE,
+    STATE_DATE,
+    STATE_TRAIN_SELECT,
+    STATE_CLASS_SELECT,
+    STATE_PASSENGER_NAME,
+    STATE_PASSENGER_AGE,
+    STATE_PASSENGER_GENDER,
+    STATE_PASSENGER_BERTH,
+    STATE_IRCTC_USER,
+    STATE_IRCTC_PASS,
+    STATE_CONFIRM
+) = range(11)
+
+# Conversation States for Account Setup/Change
+STATE_SET_USER, STATE_SET_PASS = range(11, 13)
+
+# ----------------- Account Management Handlers -----------------
+
+async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View stored IRCTC credentials for this specific chat."""
+    tg_id = update.effective_user.id
+    username, password = await storage.get_decrypted_credentials(tg_id)
+
+    if not username:
+        await update.message.reply_text(
+            "ℹ️ *No IRCTC Account Configured*\n\n"
+            "You haven't linked your IRCTC ID yet.\n"
+            "Use `/change_account` to link your IRCTC username & password.",
+            parse_mode="Markdown"
+        )
+        return
+
+    masked_u = mask_text(username, 3)
+    masked_p = "•" * 8
+    await update.message.reply_text(
+        f"🔐 *Your Configured IRCTC Account:*\n\n"
+        f"• *IRCTC Username:* `{masked_u}`\n"
+        f"• *Password:* `{masked_p}`\n"
+        f"• *Status:* Encrypted & Active (AES-256)\n\n"
+        "Commands:\n"
+        "• `/change_account` - Update your ID/Password\n"
+        "• `/reset_account` - Remove your credentials from storage",
+        parse_mode="Markdown"
+    )
+
+async def cmd_reset_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Wipes stored credentials for this chat."""
+    tg_id = update.effective_user.id
+    success = await storage.reset_user_credentials(tg_id)
+    if success:
+        await update.message.reply_text("🗑️ *IRCTC account credentials have been completely reset and deleted.*", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("ℹ️ No active IRCTC account was saved for this chat.")
+
+async def start_change_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Begins the credential update conversation."""
+    await update.message.reply_text(
+        "🔑 *IRCTC Account Setup*\n\n"
+        "Please enter your *IRCTC Username*:\n"
+        "_(This is securely encrypted at rest for this chat)_",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return STATE_SET_USER
+
+async def handle_set_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["new_irctc_user"] = update.message.text.strip()
+    await update.message.reply_text("Now enter your *IRCTC Password*:", parse_mode="Markdown")
+    return STATE_SET_PASS
+
+async def handle_set_pass(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    irctc_pass = update.message.text.strip()
+    irctc_user = context.user_data.get("new_irctc_user", "")
+    tg_id = update.effective_user.id
+
+    await storage.save_user_credentials(tg_id, irctc_user, irctc_pass)
+    await update.message.reply_text(
+        f"✅ *IRCTC Account Successfully Saved!*\n\n"
+        f"• Username: `{mask_text(irctc_user, 3)}`\n"
+        f"• Password: `••••••••`\n\n"
+        "You can now book tickets anytime using `/start` or `hi`.",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+# ----------------- Booking Conversation Handlers -----------------
+
+async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point for /start, /book, or greetings."""
+    tg_user = update.effective_user
+    context.user_data.clear()
+
+    welcome_msg = (
+        f"🚆 *Welcome to the IRCTC AI Booking Agent, {tg_user.first_name}!*\n\n"
+        "I will help you search trains, check live seat availability with prices, "
+        "and continuously monitor Waiting List tickets with auto-booking.\n\n"
+        "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n"
+        "*(Example: `MAS-NLR`)*"
+    )
+    await update.message.reply_text(welcome_msg, parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+    return STATE_ROUTE
+
+async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip().upper()
+    parts = text.split("-")
+    if len(parts) != 2 or not parts[0].isalpha() or not parts[1].isalpha():
+        await update.message.reply_text("❌ Please enter valid 3-4 letter station codes as `SRC-DST` (e.g. `MAS-NLR`):")
+        return STATE_ROUTE
+
+    context.user_data["source"] = parts[0]
+    context.user_data["dest"] = parts[1]
+
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    date_keyboard = [[today_str, tomorrow_str]]
+    await update.message.reply_text(
+        f"✅ Route Selected: *{parts[0]}* ➔ *{parts[1]}*\n\n"
+        "📅 Now enter your *Journey Date* in `YYYY-MM-DD` format\n"
+        "*(or choose from quick options below)*:",
+        reply_markup=ReplyKeyboardMarkup(date_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_DATE
+
+async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw_date = update.message.text.strip()
+    # Normalize DD-MM-YYYY to YYYY-MM-DD if needed
+    if re.match(r"^\d{2}-\d{2}-\d{4}$", raw_date):
+        d, m, y = raw_date.split("-")
+        date_str = f"{y}-{m}-{d}"
+    elif re.match(r"^\d{4}-\d{2}-\d{2}$", raw_date):
+        date_str = raw_date
+    else:
+        await update.message.reply_text("❌ Invalid format. Please enter date as `YYYY-MM-DD` (e.g. `2026-10-15`):")
+        return STATE_DATE
+
+    context.user_data["date"] = date_str
+    await update.message.reply_text("🔍 *Searching trains sorted by earliest departure time...*", parse_mode="Markdown")
+
+    trains = await irctc_svc.search_trains(context.user_data["source"], context.user_data["dest"], date_str)
+    context.user_data["train_list"] = trains
+
+    msg = "🚆 *Available Trains (Sorted: Earliest Start First):*\n\n"
+    keyboard = []
+    for t in trains:
+        msg += f"• `{t['number']}` - *{t['name']}*\n  🕒 Departs: `{t['departure']}` ➔ Arrives: `{t['arrival']}` ({t['duration']})\n\n"
+        keyboard.append([f"{t['number']} - {t['name']} ({t['departure']})"])
+
+    await update.message.reply_text(
+        msg,
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_TRAIN_SELECT
+
+async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    selected_text = update.message.text.strip()
+    train_number = selected_text.split(" - ")[0].split()[0].strip()
+    
+    # Locate train details
+    train_info = next((t for t in context.user_data.get("train_list", []) if t["number"] == train_number), None)
+    context.user_data["train_number"] = train_number
+    context.user_data["train_name"] = train_info["name"] if train_info else "EXP"
+
+    await update.message.reply_text(f"⏳ Checking live class availability & fares for Train *{train_number}*...", parse_mode="Markdown")
+
+    # Fetch classes WITH PRICES AND AVAILABILITY
+    class_options = await irctc_svc.get_class_options_with_prices(
+        train_number, context.user_data["source"], context.user_data["dest"], context.user_data["date"]
+    )
+    context.user_data["class_options"] = class_options
+
+    msg = f"🎟️ *Select Coach Class for Train {train_number}:*\n\n"
+    keyboard = []
+    for c in class_options:
+        msg += f"• *{c['class_code']}:* `{c['status']}` — *₹{int(c['fare'])}*\n"
+        keyboard.append([f"{c['class_code']} - {c['status']} (Rs. {int(c['fare'])})"])
+
+    await update.message.reply_text(
+        msg,
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_CLASS_SELECT
+
+async def handle_class_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    coach_code = text.split(" - ")[0].split()[0].upper()
+    context.user_data["coach_class"] = coach_code
+
+    # Find fare
+    opts = context.user_data.get("class_options", [])
+    matching = next((o for o in opts if o["class_code"] == coach_code), None)
+    context.user_data["fare"] = matching["fare"] if matching else 240.0
+    context.user_data["class_status"] = matching["status"] if matching else "AVAILABLE"
+
+    await update.message.reply_text(
+        f"Selected Class: *{coach_code}* (Fare: ₹{int(context.user_data['fare'])})\n\n"
+        "👤 Please enter the *Passenger Full Name*:",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+    return STATE_PASSENGER_NAME
+
+async def handle_passenger_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["p_name"] = update.message.text.strip()
+    await update.message.reply_text("Enter passenger *Age*:", parse_mode="Markdown")
+    return STATE_PASSENGER_AGE
+
+async def handle_passenger_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        age = int(update.message.text.strip())
+        if age < 1 or age > 120:
+            raise ValueError
+        context.user_data["p_age"] = age
+    except ValueError:
+        await update.message.reply_text("❌ Please enter a valid age (1-120):")
+        return STATE_PASSENGER_AGE
+
+    gender_keyboard = [["Male", "Female", "Transgender"]]
+    await update.message.reply_text(
+        "Select passenger *Gender*:",
+        reply_markup=ReplyKeyboardMarkup(gender_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_PASSENGER_GENDER
+
+async def handle_passenger_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["p_gender"] = update.message.text.strip()[0].upper()
+
+    berth_keyboard = [
+        ["Lower Berth (LB)", "Middle Berth (MB)"],
+        ["Upper Berth (UB)", "Side Lower (SL)"],
+        ["Side Upper (SU)", "No Preference"]
+    ]
+    await update.message.reply_text(
+        "Select *Berth Preference*:",
+        reply_markup=ReplyKeyboardMarkup(berth_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_PASSENGER_BERTH
+
+async def handle_passenger_berth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["p_berth"] = update.message.text.strip()
+
+    # Verify if this user has IRCTC credentials configured
+    tg_id = update.effective_user.id
+    username, password = await storage.get_decrypted_credentials(tg_id)
+
+    if not username:
+        # Ask for credentials now
+        await update.message.reply_text(
+            "⚠️ *IRCTC Account Required*\n\n"
+            "You haven't linked your IRCTC ID to this Telegram chat yet.\n"
+            "Please enter your *IRCTC Username* now:",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        return STATE_IRCTC_USER
+
+    # Credentials exist, show final confirmation
+    return await render_confirmation(update, context)
+
+async def handle_inline_irctc_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["temp_irctc_user"] = update.message.text.strip()
+    await update.message.reply_text("Now enter your *IRCTC Password*:", parse_mode="Markdown")
+    return STATE_IRCTC_PASS
+
+async def handle_inline_irctc_pass(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    irctc_pass = update.message.text.strip()
+    irctc_user = context.user_data.get("temp_irctc_user", "")
+    tg_id = update.effective_user.id
+
+    await storage.save_user_credentials(tg_id, irctc_user, irctc_pass)
+    await update.message.reply_text("🔐 IRCTC credentials encrypted and saved for this chat!")
+    return await render_confirmation(update, context)
+
+async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    u = context.user_data
+    summary = (
+        "📋 *JOURNEY BOOKING SUMMARY:*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')}\n"
+        f"• *Route:* `{u['source']}` ➔ `{u['dest']}`\n"
+        f"• *Date:* `{u['date']}`\n"
+        f"• *Class:* `{u['coach_class']}` ({u.get('class_status')})\n"
+        f"• *Fare:* `₹{int(u['fare'])}` (+ IRCTC fee)\n"
+        f"• *Passenger:* {u['p_name']}, Age {u['p_age']} ({u['p_gender']})\n"
+        f"• *Berth:* {u['p_berth']}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👉 Type `CONFIRM` or tap the button below to start:"
+    )
+    confirm_kb = [["CONFIRM", "CANCEL"]]
+    await update.message.reply_text(
+        summary,
+        reply_markup=ReplyKeyboardMarkup(confirm_kb, one_time_keyboard=True, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_CONFIRM
+
+async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    ans = update.message.text.strip().upper()
+    if ans != "CONFIRM":
+        await update.message.reply_text("❌ Booking cancelled. Type `hi` or `/start` to start over.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    u = context.user_data
+    tg_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    passengers = [{
+        "name": u["p_name"],
+        "age": u["p_age"],
+        "gender": u["p_gender"],
+        "berth": u["p_berth"],
+        "status": "WL"
+    }]
+
+    # Check live seat status
+    avail = await irctc_svc.check_availability(u["train_number"], u["date"], u["coach_class"], u["source"], u["dest"])
+
+    task_data = {
+        "telegram_id": tg_id,
+        "telegram_chat_id": chat_id,
+        "source_stn": u["source"],
+        "dest_stn": u["dest"],
+        "journey_date": u["date"],
+        "train_number": u["train_number"],
+        "train_name": u.get("train_name", "EXP"),
+        "coach_class": u["coach_class"],
+        "passengers": passengers,
+        "created_at": datetime.datetime.now().isoformat()
+    }
+
+    task_id = await storage.add_task(task_data)
+
+    if avail["is_available"]:
+        await update.message.reply_text(
+            "⚡ *Seats are Available!* Launching instant booking & payment checkout...",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        # Execute immediate booking through scheduler engine
+        if global_scheduler:
+            await global_scheduler.check_and_process_task(await storage.get_task(task_id), is_manual=False)
+    else:
+        # Waiting list -> continuous monitor
+        initial_card = (
+            f"⏳ *SEATS CURRENTLY IN WAITING LIST ({avail['status']})*\n\n"
+            f"🔄 *Continuous Polling Monitor Activated:*\n"
+            f"• *Task ID:* `{task_id}`\n"
+            f"• *Train:* `{u['train_number']}` ({u['coach_class']})\n"
+            f"• *Route:* {u['source']} ➔ {u['dest']}\n\n"
+            f"The bot will check automatically every 60 seconds and report each try.\n"
+            f"Click *'Try Now'* below to trigger an immediate check anytime! 👇"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Try Now", callback_data=f"try_{task_id}"),
+                InlineKeyboardButton("❌ Cancel Monitoring", callback_data=f"cancel_{task_id}")
+            ]
+        ])
+        sent_msg = await update.message.reply_text(
+            initial_card,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        if global_scheduler:
+            global_scheduler.status_message_ids[task_id] = sent_msg.message_id
+
+    return ConversationHandler.END
+
+async def cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Operation cancelled. Type `hi` or `/start` to begin anytime.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+# ----------------- Inline Button Callbacks ('Try Now' & 'Cancel') -----------------
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data or ""
+    if data.startswith("try_"):
+        task_id = data.replace("try_", "")
+        if global_scheduler:
+            res = await global_scheduler.trigger_manual_check(task_id)
+            if not res:
+                await query.answer("Task is no longer active or already completed.", show_alert=True)
+            else:
+                await query.answer("Manual check completed!")
+    elif data.startswith("cancel_"):
+        task_id = data.replace("cancel_", "")
+        deleted = await storage.delete_task(task_id)
+        if deleted:
+            await query.edit_message_text(
+                f"🛑 *Monitoring for Task `{task_id}` has been cancelled.*",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.answer("Task was already stopped.", show_alert=True)
+
+# ----------------- Global OTP Interceptor -----------------
+
+async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Listens for messages that look like Bank OTPs when a payment checkout is in progress.
+    """
+    chat_id = update.effective_chat.id
+    text = update.message.text.strip()
+
+    if irctc_svc.is_waiting_for_otp(chat_id):
+        # User entered an OTP
+        success = irctc_svc.provide_otp(chat_id, text)
+        if success:
+            await update.message.reply_text(f"🔐 Received OTP `{text}`. Submitting to 3D-Secure Bank Gateway...")
+        return
+
+    # Normal unrecognized message outside conversation
+    await update.message.reply_text("👋 Hello! Send `hi` or `/start` to book a train ticket, or `/account` to manage credentials.")

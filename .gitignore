@@ -1,0 +1,32 @@
+# Environment & Secret Credentials
+.env
+.env.local
+*.env
+secret.key
+
+# Persistent storage & active tasks
+data/
+*.db
+*.sqlite3
+
+# Generated ticket documents
+tickets/*.pdf
+!tickets/.gitkeep
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Logs
+*.log
+logs/
+
+# OS and Editor junk
+.DS_Store
+Thumbs.db
+*.onetoc2
+.vscode/
+.idea/
