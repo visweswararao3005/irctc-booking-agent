@@ -148,12 +148,17 @@ class BackgroundBookingWorker:
             )
             await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, parse_mode="Markdown")
 
+        # Get this specific user's decrypted card
+        card_data = await storage.get_decrypted_card(task.get("telegram_id"))
+
         # Request payment & wait for user OTP
         payment_res = await self.service.request_card_payment_and_wait_for_otp(
             chat_id=chat_id,
             amount=amount,
-            prompt_callback=otp_prompt_callback
+            prompt_callback=otp_prompt_callback,
+            card_info=card_data
         )
+
 
         if not payment_res.get("success"):
             await self.bot_app.bot.send_message(

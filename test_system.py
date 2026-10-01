@@ -43,7 +43,30 @@ async def run_tests():
     assert reset_u is None or reset_u == "", f"Reset failed, still got: {reset_u}"
     print("✅ Per-Chat Credential Management & Reset: PASSED")
 
+    # 2b. Test Per-Chat Credit Card Storage & Encryption
+    print("\n[Test 2b] Testing Per-Chat Payment Card Storage, Masking & Reset in JSON...")
+    await storage.save_user_card(
+        telegram_id=test_user_id,
+        card_number="4111222233334444",
+        card_expiry="12/28",
+        card_cvv="123",
+        card_holder="BALAJI P"
+    )
+    card_data = await storage.get_decrypted_card(test_user_id)
+    assert card_data is not None, "Card data not found in storage"
+    assert card_data["card_number"] == "4111222233334444", "Card number mismatch"
+    assert card_data["card_expiry"] == "12/28", "Card expiry mismatch"
+    assert card_data["card_cvv"] == "123", "Card CVV mismatch"
+    assert card_data["card_holder"] == "BALAJI P", "Card holder mismatch"
+
+    # Test reset card
+    await storage.reset_user_card(test_user_id)
+    reset_card = await storage.get_decrypted_card(test_user_id)
+    assert reset_card is None, f"Card reset failed, still got: {reset_card}"
+    print("✅ Per-Chat Payment Card Management & Reset: PASSED")
+
     # 3. Test Train Search & Chronological Sorting
+
     print("\n[Test 3] Testing Train Search & Earliest Departure Sorting...")
     service = IRCTCService()
     trains = await service.search_trains("MAS", "NLR", "2026-10-15")

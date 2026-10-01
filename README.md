@@ -71,9 +71,13 @@ python main.py
 | `/account` | Displays your currently linked IRCTC username (with password masked). |
 | `/change_account` | Guides you to link or change your IRCTC username and password. |
 | `/reset_account` | Clears and deletes your saved IRCTC credentials from storage. |
+| `/card` / `/payment` | Displays your linked Credit/Debit card (masked: `**** **** **** 4444`). |
+| `/change_card` | Guides you to link or update your payment card (Number, Expiry, CVV, Name). |
+| `/reset_card` | Deletes and removes your saved payment card details from storage. |
 | `/cancel` | Cancels the ongoing conversation or active form. |
 | `[🔄 Try Now]` *(Inline Button)* | Forces an immediate availability check during monitoring. |
 | `[❌ Cancel Monitoring]` *(Inline Button)* | Halts background monitoring and purges the task. |
+
 
 ---
 

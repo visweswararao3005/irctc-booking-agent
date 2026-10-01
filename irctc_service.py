@@ -142,14 +142,22 @@ class IRCTCService:
         self,
         chat_id: int,
         amount: float,
-        prompt_callback
+        prompt_callback,
+        card_info: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
         Submits Credit Card details and pauses for 3D-Secure Bank OTP from Telegram.
-        prompt_callback is an async function: async def prompt_callback(chat_id, card_mask, amount)
+        prompt_callback is an async function: async def prompt_callback(chat_id, card_mask, amount, timeout_sec)
         """
-        # Card verification
-        card_mask = f"**** **** **** {CARD_NUMBER[-4:]}" if len(CARD_NUMBER) >= 4 else "**** **** **** 8892"
+        # User-specific card verification
+        card_num = ""
+        if card_info and card_info.get("card_number"):
+            card_num = card_info["card_number"]
+        elif CARD_NUMBER:
+            card_num = CARD_NUMBER
+
+        card_mask = f"**** **** **** {card_num[-4:]}" if len(card_num) >= 4 else "**** **** **** 8892"
+
         
         # 1. Notify user in Telegram that bank OTP is required
         loop = asyncio.get_running_loop()

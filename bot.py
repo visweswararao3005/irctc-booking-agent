@@ -31,11 +31,19 @@ global_scheduler = None  # Injected in main.py
     STATE_PASSENGER_BERTH,
     STATE_IRCTC_USER,
     STATE_IRCTC_PASS,
+    STATE_CARD_NUM,
+    STATE_CARD_EXP,
+    STATE_CARD_CVV,
+    STATE_CARD_NAME,
     STATE_CONFIRM
-) = range(11)
+) = range(15)
 
 # Conversation States for Account Setup/Change
-STATE_SET_USER, STATE_SET_PASS = range(11, 13)
+STATE_SET_USER, STATE_SET_PASS = range(15, 17)
+
+# Conversation States for Standalone Card Setup/Change
+STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(17, 21)
+
 
 # ----------------- Account Management Handlers -----------------
 
@@ -106,7 +114,110 @@ async def handle_set_pass(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     return ConversationHandler.END
 
+# ----------------- Payment Card Management Handlers -----------------
+
+async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View stored payment card details for this specific chat."""
+    tg_id = update.effective_user.id
+    card = await storage.get_decrypted_card(tg_id)
+
+    if not card or not card.get("card_number"):
+        await update.message.reply_text(
+            "ℹ️ *No Payment Card Configured*\n\n"
+            "You haven't linked a credit/debit card yet.\n"
+            "Use `/change_card` to link your card for auto-booking.",
+            parse_mode="Markdown"
+        )
+        return
+
+    num = card.get("card_number", "")
+    card_mask = f"**** **** **** {num[-4:]}" if len(num) >= 4 else "****"
+    await update.message.reply_text(
+        f"💳 *Your Linked Payment Card:*\n\n"
+        f"• *Card Number:* `{card_mask}`\n"
+        f"• *Expiry:* `{card.get('card_expiry', 'MM/YY')}`\n"
+        f"• *CVV:* `•••`\n"
+        f"• *Holder Name:* `{card.get('card_holder', 'Cardholder')}`\n"
+        f"• *Status:* Encrypted & Active (AES-256)\n\n"
+        "Commands:\n"
+        "• `/change_card` - Update your card details\n"
+        "• `/reset_card` - Remove your card from storage",
+        parse_mode="Markdown"
+    )
+
+async def cmd_reset_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Wipes stored payment card for this chat."""
+    tg_id = update.effective_user.id
+    success = await storage.reset_user_card(tg_id)
+    if success:
+        await update.message.reply_text("🗑️ *Payment card details have been completely removed.*", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("ℹ️ No active payment card was saved for this chat.")
+
+async def start_change_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Begins the card update conversation."""
+    await update.message.reply_text(
+        "💳 *Payment Card Setup*\n\n"
+        "Please enter your *16-Digit Card Number*:\n"
+        "_(This is securely encrypted at rest for this chat using AES-256)_",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return STATE_SET_CARD_NUM
+
+async def handle_set_card_num(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    num = update.message.text.strip().replace(" ", "").replace("-", "")
+    if not num.isdigit() or len(num) < 12:
+        await update.message.reply_text("❌ Please enter a valid 12-19 digit card number:")
+        return STATE_SET_CARD_NUM
+    context.user_data["new_card_num"] = num
+    await update.message.reply_text("Enter *Card Expiry* in `MM/YY` format (e.g. `12/28`):", parse_mode="Markdown")
+    return STATE_SET_CARD_EXP
+
+async def handle_set_card_exp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    exp = update.message.text.strip()
+    if not re.match(r"^\d{2}/\d{2}$", exp):
+        await update.message.reply_text("❌ Please enter valid expiry as `MM/YY` (e.g. `12/28`):")
+        return STATE_SET_CARD_EXP
+    context.user_data["new_card_exp"] = exp
+    await update.message.reply_text("Enter *CVV* (3 or 4 digits):", parse_mode="Markdown")
+    return STATE_SET_CARD_CVV
+
+async def handle_set_card_cvv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cvv = update.message.text.strip()
+    if not cvv.isdigit() or len(cvv) not in [3, 4]:
+        await update.message.reply_text("❌ Please enter a valid 3 or 4 digit CVV:")
+        return STATE_SET_CARD_CVV
+    context.user_data["new_card_cvv"] = cvv
+    await update.message.reply_text("Enter *Cardholder Name* as printed on card:", parse_mode="Markdown")
+    return STATE_SET_CARD_NAME
+
+async def handle_set_card_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name = update.message.text.strip()
+    tg_id = update.effective_user.id
+    u_data = context.user_data
+
+    await storage.save_user_card(
+        telegram_id=tg_id,
+        card_number=u_data["new_card_num"],
+        card_expiry=u_data["new_card_exp"],
+        card_cvv=u_data["new_card_cvv"],
+        card_holder=name
+    )
+
+    masked_num = f"**** **** **** {u_data['new_card_num'][-4:]}"
+    await update.message.reply_text(
+        f"✅ *Payment Card Saved Successfully!*\n\n"
+        f"• *Card:* `{masked_num}`\n"
+        f"• *Expiry:* `{u_data['new_card_exp']}`\n"
+        f"• *Holder:* `{name}`\n\n"
+        "Your card is securely encrypted with AES-256 and ready for auto-booking.",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
 # ----------------- Booking Conversation Handlers -----------------
+
 
 async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /start, /book, or greetings."""
@@ -282,7 +393,24 @@ async def handle_passenger_berth(update: Update, context: ContextTypes.DEFAULT_T
         )
         return STATE_IRCTC_USER
 
-    # Credentials exist, show final confirmation
+    # Check payment card
+    return await check_card_or_confirm(update, context)
+
+async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    tg_id = update.effective_user.id
+    card = await storage.get_decrypted_card(tg_id)
+
+    if not card or not card.get("card_number"):
+        await update.message.reply_text(
+            "💳 *Payment Card Required for Auto-Booking*\n\n"
+            "You haven't linked a payment card to this chat yet.\n"
+            "Please enter your *16-Digit Card Number* now:\n"
+            "_(Encrypted with AES-256 for this chat only)_",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        return STATE_CARD_NUM
+
     return await render_confirmation(update, context)
 
 async def handle_inline_irctc_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -297,10 +425,57 @@ async def handle_inline_irctc_pass(update: Update, context: ContextTypes.DEFAULT
 
     await storage.save_user_credentials(tg_id, irctc_user, irctc_pass)
     await update.message.reply_text("🔐 IRCTC credentials encrypted and saved for this chat!")
+    return await check_card_or_confirm(update, context)
+
+async def handle_inline_card_num(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    num = update.message.text.strip().replace(" ", "").replace("-", "")
+    if not num.isdigit() or len(num) < 12:
+        await update.message.reply_text("❌ Please enter a valid 12-19 digit card number:")
+        return STATE_CARD_NUM
+    context.user_data["temp_card_num"] = num
+    await update.message.reply_text("Enter *Card Expiry* in `MM/YY` format (e.g. `12/28`):", parse_mode="Markdown")
+    return STATE_CARD_EXP
+
+async def handle_inline_card_exp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    exp = update.message.text.strip()
+    if not re.match(r"^\d{2}/\d{2}$", exp):
+        await update.message.reply_text("❌ Please enter valid expiry as `MM/YY` (e.g. `12/28`):")
+        return STATE_CARD_EXP
+    context.user_data["temp_card_exp"] = exp
+    await update.message.reply_text("Enter *CVV* (3 or 4 digits):", parse_mode="Markdown")
+    return STATE_CARD_CVV
+
+async def handle_inline_card_cvv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cvv = update.message.text.strip()
+    if not cvv.isdigit() or len(cvv) not in [3, 4]:
+        await update.message.reply_text("❌ Please enter a valid 3 or 4 digit CVV:")
+        return STATE_CARD_CVV
+    context.user_data["temp_card_cvv"] = cvv
+    await update.message.reply_text("Enter *Cardholder Name* as printed on card:", parse_mode="Markdown")
+    return STATE_CARD_NAME
+
+async def handle_inline_card_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name = update.message.text.strip()
+    tg_id = update.effective_user.id
+    u_data = context.user_data
+
+    await storage.save_user_card(
+        telegram_id=tg_id,
+        card_number=u_data["temp_card_num"],
+        card_expiry=u_data["temp_card_exp"],
+        card_cvv=u_data["temp_card_cvv"],
+        card_holder=name
+    )
+    await update.message.reply_text("💳 Card details encrypted and saved successfully!")
     return await render_confirmation(update, context)
 
 async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     u = context.user_data
+    tg_id = update.effective_user.id
+    card = await storage.get_decrypted_card(tg_id)
+    c_num = card.get("card_number", "") if card else ""
+    card_mask = f"**** **** **** {c_num[-4:]}" if len(c_num) >= 4 else "Linked Card"
+
     summary = (
         "📋 *JOURNEY BOOKING SUMMARY:*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -311,6 +486,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Fare:* `₹{int(u['fare'])}` (+ IRCTC fee)\n"
         f"• *Passenger:* {u['p_name']}, Age {u['p_age']} ({u['p_gender']})\n"
         f"• *Berth:* {u['p_berth']}\n"
+        f"• *Payment Card:* `{card_mask}` (OTP in chat)\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "👉 Type `CONFIRM` or tap the button below to start:"
     )
@@ -321,6 +497,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="Markdown"
     )
     return STATE_CONFIRM
+
 
 async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ans = update.message.text.strip().upper()

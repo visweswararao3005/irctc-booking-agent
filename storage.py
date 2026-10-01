@@ -73,6 +73,50 @@ async def reset_user_credentials(telegram_id: int) -> bool:
             return True
         return False
 
+# ----------------- Per-Chat Credit Card Management -----------------
+
+async def save_user_card(
+    telegram_id: int, card_number: str, card_expiry: str, card_cvv: str, card_holder: str
+) -> None:
+    """Save encrypted credit/debit card details for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key not in users:
+            users[user_key] = {"telegram_id": telegram_id}
+
+        clean_number = card_number.replace(" ", "").replace("-", "").strip()
+        users[user_key]["card_number"] = encrypt_text(clean_number)
+        users[user_key]["card_expiry"] = encrypt_text(card_expiry.strip())
+        users[user_key]["card_cvv"] = encrypt_text(card_cvv.strip())
+        users[user_key]["card_holder"] = encrypt_text(card_holder.strip())
+        _write_json_sync(USERS_FILE, users)
+
+async def get_decrypted_card(telegram_id: int) -> Optional[Dict[str, str]]:
+    """Return decrypted card details dict for a specific Telegram chat."""
+    user = await get_user(telegram_id)
+    if not user or "card_number" not in user:
+        return None
+    return {
+        "card_number": decrypt_text(user.get("card_number", "")),
+        "card_expiry": decrypt_text(user.get("card_expiry", "")),
+        "card_cvv": decrypt_text(user.get("card_cvv", "")),
+        "card_holder": decrypt_text(user.get("card_holder", "")),
+    }
+
+async def reset_user_card(telegram_id: int) -> bool:
+    """Delete and wipe stored card credentials for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key in users:
+            for k in ["card_number", "card_expiry", "card_cvv", "card_holder"]:
+                users[user_key].pop(k, None)
+            _write_json_sync(USERS_FILE, users)
+            return True
+        return False
+
+
 # ----------------- Active Tasks & Polling Lifecycle -----------------
 
 async def add_task(task_data: Dict[str, Any]) -> str:

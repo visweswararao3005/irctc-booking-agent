@@ -81,6 +81,10 @@ async def run_bot():
             bot.STATE_PASSENGER_BERTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_berth)],
             bot.STATE_IRCTC_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_irctc_user)],
             bot.STATE_IRCTC_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_irctc_pass)],
+            bot.STATE_CARD_NUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_num)],
+            bot.STATE_CARD_EXP: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_exp)],
+            bot.STATE_CARD_CVV: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_cvv)],
+            bot.STATE_CARD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_name)],
             bot.STATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_confirm)],
         },
         fallbacks=[CommandHandler("cancel", bot.cancel_booking)]
@@ -99,15 +103,35 @@ async def run_bot():
         fallbacks=[CommandHandler("cancel", bot.cancel_booking)]
     )
 
+    # 3. Card Setup/Change Conversation Handler
+    card_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("change_card", bot.start_change_card),
+            CommandHandler("set_card", bot.start_change_card),
+        ],
+        states={
+            bot.STATE_SET_CARD_NUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_card_num)],
+            bot.STATE_SET_CARD_EXP: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_card_exp)],
+            bot.STATE_SET_CARD_CVV: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_card_cvv)],
+            bot.STATE_SET_CARD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_card_name)],
+        },
+        fallbacks=[CommandHandler("cancel", bot.cancel_booking)]
+    )
+
     # Register handlers
     app.add_handler(booking_conv)
     app.add_handler(account_conv)
+    app.add_handler(card_conv)
     app.add_handler(CommandHandler("account", bot.cmd_account))
     app.add_handler(CommandHandler("reset_account", bot.cmd_reset_account))
+    app.add_handler(CommandHandler("card", bot.cmd_card))
+    app.add_handler(CommandHandler("payment", bot.cmd_card))
+    app.add_handler(CommandHandler("reset_card", bot.cmd_reset_card))
     app.add_handler(CallbackQueryHandler(bot.handle_callback_query))
 
     # Fallback message handler (used for OTP capture & general messages)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_potential_otp))
+
 
     # Start background polling worker in asyncio task
     asyncio.create_task(scheduler.start())
