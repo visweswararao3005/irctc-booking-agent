@@ -247,31 +247,51 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     )
     return STATE_ROUTE
 
+def get_date_keyboard():
+    today = datetime.date.today()
+    tomorrow = today + datetime.timedelta(days=1)
+    day_after = today + datetime.timedelta(days=2)
+
+    return ReplyKeyboardMarkup(
+        [
+            [f"📅 Today ({today.strftime('%Y-%m-%d')})", f"📅 Tomorrow ({tomorrow.strftime('%Y-%m-%d')})"],
+            [f"📅 Day After ({day_after.strftime('%Y-%m-%d')})", "📅 Choose Custom Date"],
+            ["⬅️ Back", "❌ Cancel"]
+        ],
+        resize_keyboard=True
+    )
+
 async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip().upper()
     if is_cancel_command(text):
         return await cancel_booking(update, context)
 
-    parts = text.split("-")
-    if len(parts) != 2 or not parts[0].isalpha() or not parts[1].isalpha():
+    # Clean separators: support ' - ', '-', ' TO ', '->', '➔', '/', or spaces
+    cleaned = re.sub(r"\s*(->|➔|TO|-|–|/)\s*", "-", text, flags=re.IGNORECASE).strip()
+    if "-" not in cleaned and " " in cleaned:
+        cleaned = re.sub(r"\s+", "-", cleaned).strip()
+
+    parts = [p.strip().upper() for p in cleaned.split("-") if p.strip()]
+    if len(parts) != 2 or not parts[0].isalpha() or not parts[1].isalpha() or len(parts[0]) > 6 or len(parts[1]) > 6:
         await update.message.reply_text("❌ Please enter valid station codes as `SRC-DST` (e.g. `KJM-MAS` or `MAS-NLR`):")
         return STATE_ROUTE
 
     context.user_data["source"] = parts[0]
     context.user_data["dest"] = parts[1]
 
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    # Persist session to JSON so redeploys don't lose the route
+    tg_id = update.effective_user.id
+    await storage.save_user_session(tg_id, context.user_data)
 
-    date_keyboard = [
-        [today_str, tomorrow_str],
-        ["⬅️ Back", "❌ Cancel"]
-    ]
+    today = datetime.date.today()
+    today_disp = today.strftime("%d-%b-%Y (%A)")
+
     await update.message.reply_text(
-        f"✅ Route Selected: *{parts[0]}* ➔ *{parts[1]}*\n\n"
-        "📅 Now enter your *Journey Date* in `YYYY-MM-DD` format\n"
-        "*(or choose from quick options below)*:",
-        reply_markup=ReplyKeyboardMarkup(date_keyboard, resize_keyboard=True),
+        f"✅ Route Selected: *{parts[0]}* ➔ *{parts[1]}*\n"
+        f"📅 Today's Date: `{today_disp}`\n\n"
+        "👉 *Choose your Journey Date below*:\n"
+        "_(Only today or future dates within 120 days are valid)_",
+        reply_markup=get_date_keyboard(),
         parse_mode="Markdown"
     )
     return STATE_DATE
@@ -289,39 +309,89 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         )
         return STATE_ROUTE
 
-    # Normalize DD-MM-YYYY to YYYY-MM-DD if needed
-    if re.match(r"^\d{2}-\d{2}-\d{4}$", raw_date):
-        d, m, y = raw_date.split("-")
-        date_str = f"{y}-{m}-{d}"
-    elif re.match(r"^\d{4}-\d{2}-\d{2}$", raw_date):
-        date_str = raw_date
-    else:
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    if "custom date" in raw_date.lower():
         await update.message.reply_text(
-            "❌ Invalid format. Please enter date as `YYYY-MM-DD` (e.g. `2026-10-05`):",
-            reply_markup=ReplyKeyboardMarkup([[today_str, tomorrow_str], ["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            "📅 *Enter Custom Journey Date:*\n\n"
+            "Please type your travel date in `YYYY-MM-DD` (e.g. `2026-10-05`) or `DD-MM-YYYY` format:\n"
+            "_(Only today or future dates up to 120 days in advance are permitted)_",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
             parse_mode="Markdown"
         )
         return STATE_DATE
 
+    # Extract date if clicked from quick button e.g. "📅 Today (2026-10-01)"
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", raw_date)
+    if m:
+        clean_input = m.group(1)
+    elif raw_date.lower() == "today":
+        clean_input = datetime.date.today().strftime("%Y-%m-%d")
+    elif raw_date.lower() == "tomorrow":
+        clean_input = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        clean_input = raw_date
+
+    # Parse date across standard formats
+    date_obj = None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            date_obj = datetime.datetime.strptime(clean_input, fmt).date()
+            break
+        except ValueError:
+            pass
+
+    if not date_obj:
+        await update.message.reply_text(
+            "❌ Invalid date format. Please enter date as `YYYY-MM-DD` (e.g. `2026-10-05`)\n"
+            "or tap one of the quick options below:",
+            reply_markup=get_date_keyboard(),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    # Strict Future Date Validation
+    today = datetime.date.today()
+    max_advance = today + datetime.timedelta(days=120)
+
+    if date_obj < today:
+        await update.message.reply_text(
+            f"❌ *Past Date Not Allowed!*\n\n"
+            f"You entered `{date_obj.strftime('%Y-%m-%d')}`, which is in the past.\n"
+            f"Indian Railways reservations permit only *Today ({today.strftime('%Y-%m-%d')})* or a *Future Date*.\n\n"
+            "Please select a valid date from the options below:",
+            reply_markup=get_date_keyboard(),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    if date_obj > max_advance:
+        await update.message.reply_text(
+            f"❌ *Date Beyond 120-Day Advance Booking Window!*\n\n"
+            f"Indian Railways advance bookings are open up to 120 days in advance (until `{max_advance.strftime('%Y-%m-%d')}`).\n"
+            "Please choose a date within the booking window:",
+            reply_markup=get_date_keyboard(),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    date_str = date_obj.strftime("%Y-%m-%d")
     context.user_data["date"] = date_str
-    src = context.user_data["source"]
-    dst = context.user_data["dest"]
+    src = context.user_data.get("source", "KJM")
+    dst = context.user_data.get("dest", "MAS")
+
+    tg_id = update.effective_user.id
+    await storage.save_user_session(tg_id, context.user_data)
 
     await update.message.reply_text(f"🔍 *Fetching live trains for {src} ➔ {dst} on {date_str}...*", parse_mode="Markdown")
 
     trains = await irctc_svc.search_trains(src, dst, date_str)
     context.user_data["train_list"] = trains
-
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    await storage.save_user_session(tg_id, context.user_data)
 
     if not trains:
         await update.message.reply_text(
             f"⚠️ No matching trains found running on `{date_str}` for `{src} ➔ {dst}`.\n"
             "Please choose or enter another journey date:",
-            reply_markup=ReplyKeyboardMarkup([[today_str, tomorrow_str], ["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            reply_markup=get_date_keyboard(),
             parse_mode="Markdown"
         )
         return STATE_DATE
@@ -353,8 +423,8 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     if is_back_command(selected_text):
         await update.message.reply_text(
             f"Route: *{context.user_data.get('source')}* ➔ *{context.user_data.get('dest')}*\n\n"
-            "📅 Enter your *Journey Date* in `YYYY-MM-DD` format:",
-            reply_markup=ReplyKeyboardMarkup([[today_str, tomorrow_str], ["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            "📅 *Choose your Journey Date*:",
+            reply_markup=get_date_keyboard(),
             parse_mode="Markdown"
         )
         return STATE_DATE
@@ -367,6 +437,20 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Locate train details
     train_info = next((t for t in context.user_data.get("train_list", []) if t["number"] == train_number), None)
+    if not train_info and train_number.isdigit():
+        # Fetch live trains if train_list was cleared
+        src = context.user_data.get("source", "KJM")
+        dst = context.user_data.get("dest", "MAS")
+        dt = context.user_data.get("date", datetime.date.today().strftime("%Y-%m-%d"))
+        fresh_trains = await irctc_svc.search_trains(src, dst, dt)
+        context.user_data["train_list"] = fresh_trains
+        train_info = next((t for t in fresh_trains if t["number"] == train_number), {
+            "number": train_number,
+            "name": selected_text.split(" - ")[1].split("(")[0].strip() if " - " in selected_text else "SUPERFAST EXP",
+            "departure": "00:15",
+            "arrival": "06:45"
+        })
+
     if not train_info:
         await update.message.reply_text(
             "❌ Please tap one of the train options from the keyboard below, or click '⬅️ Back':"
@@ -377,6 +461,8 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["train_name"] = train_info.get("name", "EXP")
     context.user_data["departure"] = train_info.get("departure", "00:00")
     context.user_data["arrival"] = train_info.get("arrival", "00:00")
+    tg_id = update.effective_user.id
+    await storage.save_user_session(tg_id, context.user_data)
 
     await update.message.reply_text(f"⏳ Checking live availability & fares for Train *{train_number}*...", parse_mode="Markdown")
 
@@ -875,9 +961,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Listens for messages that look like Bank OTPs when a payment checkout is in progress.
+    Listens for messages that look like Bank OTPs when a payment checkout is in progress,
+    or intelligently recovers active sessions if server restarted.
     """
     chat_id = update.effective_chat.id
+    tg_id = update.effective_user.id
     text = update.message.text.strip()
 
     if irctc_svc.is_waiting_for_otp(chat_id):
@@ -887,5 +975,32 @@ async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(f"🔐 Received OTP `{text}`. Submitting to 3D-Secure Bank Gateway...")
         return
 
+    # 1. Check if user tapped a train option like "16022 - KAVERI EXPRESS (00:15)"
+    train_match = re.match(r"^(\d{5})\s*-\s*(.+?)(?:\s*\(\d{2}:\d{2}\))?$", text)
+    if train_match:
+        train_num = train_match.group(1)
+        saved = await storage.get_user_session(tg_id)
+        if saved and saved.get("source") and saved.get("dest") and saved.get("date"):
+            # Restore saved session into context.user_data
+            context.user_data.update(saved)
+            context.user_data["train_number"] = train_num
+            await update.message.reply_text(
+                f"🔄 *Restoring Session:* Train *{train_num}* for *{saved.get('source')}* ➔ *{saved.get('dest')}* on *{saved.get('date')}*...\n"
+                "Checking live coach classes and fares...",
+                parse_mode="Markdown"
+            )
+            return await handle_train_select(update, context)
+
+    # 2. Check if user typed a route like "KJM - MAS" or "KJM-MAS"
+    cleaned = re.sub(r"\s*(->|➔|TO|-|–|/)\s*", "-", text, flags=re.IGNORECASE).strip()
+    if "-" not in cleaned and " " in cleaned:
+        cleaned = re.sub(r"\s+", "-", cleaned).strip()
+    parts = [p.strip().upper() for p in cleaned.split("-") if p.strip()]
+    if len(parts) == 2 and parts[0].isalpha() and parts[1].isalpha() and len(parts[0]) <= 6 and len(parts[1]) <= 6:
+        context.user_data.clear()
+        return await handle_route(update, context)
+
     # Normal unrecognized message outside conversation
-    await update.message.reply_text("👋 Hello! Send `hi` or `/start` to book a train ticket, or `/account` to manage credentials.")
+    await update.message.reply_text(
+        "👋 Hello! Send `hi` or a route like `KJM-MAS` to book a train ticket, or `/account` to manage credentials."
+    )

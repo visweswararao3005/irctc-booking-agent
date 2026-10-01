@@ -11,6 +11,7 @@ from security import encrypt_text, decrypt_text
 
 USERS_FILE = DATA_DIR / "users.json"
 TASKS_FILE = DATA_DIR / "active_tasks.json"
+SESSIONS_FILE = DATA_DIR / "sessions.json"
 
 _lock = asyncio.Lock()
 
@@ -177,3 +178,28 @@ async def delete_task(task_id: str) -> bool:
             _write_json_sync(TASKS_FILE, tasks)
             return True
         return False
+
+# ----------------- User Session Persistence & Crash Recovery -----------------
+
+async def save_user_session(telegram_id: int, session_data: Dict[str, Any]) -> None:
+    """Save active booking session data so restarts/redeploys never drop the user."""
+    async with _lock:
+        sessions = _read_json_sync(SESSIONS_FILE)
+        # Store clean serializable copy
+        clean_copy = {k: v for k, v in session_data.items() if isinstance(v, (str, int, float, list, dict, bool))}
+        sessions[str(telegram_id)] = clean_copy
+        _write_json_sync(SESSIONS_FILE, sessions)
+
+async def get_user_session(telegram_id: int) -> Dict[str, Any]:
+    """Retrieve saved booking session for user to seamlessly recover state."""
+    async with _lock:
+        sessions = _read_json_sync(SESSIONS_FILE)
+        return sessions.get(str(telegram_id), {})
+
+async def clear_user_session(telegram_id: int) -> None:
+    """Clear session once booking is confirmed or cancelled."""
+    async with _lock:
+        sessions = _read_json_sync(SESSIONS_FILE)
+        if str(telegram_id) in sessions:
+            del sessions[str(telegram_id)]
+            _write_json_sync(SESSIONS_FILE, sessions)

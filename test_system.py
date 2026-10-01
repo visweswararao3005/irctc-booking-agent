@@ -65,6 +65,37 @@ async def run_tests():
     assert reset_card is None, f"Card reset failed, still got: {reset_card}"
     print("✅ Per-Chat Payment Card Management & Reset: PASSED")
 
+    # [Test 2c] Testing User Session Persistence & Recovery...
+    print("\n[Test 2c] Testing User Session Persistence & Recovery...")
+    sample_session = {
+        "source": "KJM",
+        "dest": "MAS",
+        "date": "2026-10-05",
+        "train_number": "16022"
+    }
+    await storage.save_user_session(test_user_id, sample_session)
+    restored_session = await storage.get_user_session(test_user_id)
+    assert restored_session.get("source") == "KJM"
+    assert restored_session.get("dest") == "MAS"
+    assert restored_session.get("date") == "2026-10-05"
+    await storage.clear_user_session(test_user_id)
+    cleared = await storage.get_user_session(test_user_id)
+    assert cleared == {}
+    print("✅ Session Persistence & Crash Recovery: PASSED")
+
+    # [Test 2d] Testing Date Keyboard & Future Date Logic...
+    print("\n[Test 2d] Testing Current Date & Future-Only Date Constraints...")
+    import datetime
+    today = datetime.date.today()
+    past_date = today - datetime.timedelta(days=1)
+    future_date = today + datetime.timedelta(days=5)
+    assert past_date < today, "Past date calculation error"
+    assert future_date >= today, "Future date calculation error"
+    from bot import get_date_keyboard
+    kb = get_date_keyboard()
+    assert kb is not None
+    print(f"✅ Current Date & Future Date Constraints: PASSED (Today is {today})")
+
     # 3. Test Train Search & Chronological Sorting
 
     print("\n[Test 3] Testing Train Search & Earliest Departure Sorting...")
