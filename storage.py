@@ -118,6 +118,37 @@ async def reset_user_card(telegram_id: int) -> bool:
         return False
 
 
+# ----------------- User UPI ID Management -----------------
+
+async def save_user_upi(telegram_id: int, upi_id: str) -> None:
+    """Save encrypted UPI ID for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key not in users:
+            users[user_key] = {"telegram_id": telegram_id}
+        users[user_key]["upi_id"] = encrypt_text(upi_id.strip())
+        _write_json_sync(USERS_FILE, users)
+
+async def get_decrypted_upi(telegram_id: int) -> Optional[str]:
+    """Return decrypted UPI ID for a specific Telegram chat."""
+    user = await get_user(telegram_id)
+    if not user or "upi_id" not in user:
+        return None
+    return decrypt_text(user.get("upi_id", ""))
+
+async def reset_user_upi(telegram_id: int) -> bool:
+    """Delete stored UPI ID for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key in users and "upi_id" in users[user_key]:
+            del users[user_key]["upi_id"]
+            _write_json_sync(USERS_FILE, users)
+            return True
+        return False
+
+
 # ----------------- Active Tasks & Polling Lifecycle -----------------
 
 async def add_task(task_data: Dict[str, Any]) -> str:

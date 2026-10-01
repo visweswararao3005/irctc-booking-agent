@@ -78,29 +78,37 @@ class BackgroundBookingWorker:
 
         tag = "⚡ [MANUAL TRY NOW]" if is_manual else f"🔄 [AUTOMATIC TRY #{attempts}]"
 
-        if avail["is_available"]:
-            # SEAT AVAILABLE! Initiate Booking Workflow
+        # Sniper Mode Check: ONLY book if seat is Confirmed / Current Available, NEVER Waiting List
+        is_sniper = task.get("booking_mode") == "SNIPER"
+        status_upper = avail.get("status", "").upper()
+        is_wl = any(x in status_upper for x in ["WL", "WAITING", "RAC", "REGRET"])
+        can_book = avail["is_available"] and (not is_sniper or not is_wl)
+
+        if can_book:
+            # SEAT AVAILABLE & CONFIRMED! Initiate Booking Workflow
             status_text = (
-                f"🎉 *SEATS ARE NOW AVAILABLE!*\n\n"
+                f"🎉 *CONFIRMED SEATS ARE NOW AVAILABLE!*\n\n"
                 f"{tag} at `{now_str}`\n"
                 f"• *Train:* {train_no} ({coach_class})\n"
                 f"• *Status:* {avail['status']}\n\n"
-                f"⚡ *Proceeding to automated booking & Credit Card checkout...*"
+                f"⚡ *Sniper Triggered! Proceeding to automated IRCTC booking & payment...*"
             )
             await self._send_or_edit_status(chat_id, task_id, status_text, keyboard=None)
             await self._execute_booking_flow(task, avail)
             return {"status": "BOOKED", "details": avail}
         else:
-            # Still in Waiting List -> Send update to user
+            # Still in Waiting List / Charting Pending -> Send update to user
+            mode_desc = "🎯 [SEAT SNIPER ACTIVE]" if is_sniper else tag
             status_text = (
-                f"{tag} at `{now_str}`\n"
+                f"{mode_desc} at `{now_str}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"• *Train:* `{train_no}` | *Class:* `{coach_class}`\n"
                 f"• *Route:* {source} ➔ {dest} ({date})\n"
                 f"• *Current Status:* `{avail['status']}`\n"
-                f"• *Total Attempts:* `{attempts}`\n"
-                f"• *Next Auto-Try:* In {POLL_INTERVAL_SECONDS} seconds\n\n"
-                f"💡 _You can click 'Try Now' anytime to force an instant re-check._"
+                f"• *Target:* Confirmed / Current Available (CURR_AVBL)\n"
+                f"• *Chart Prep Window:* ~4 hours before train departure\n"
+                f"• *Total Checks:* `{attempts}` (Next check in {POLL_INTERVAL_SECONDS}s)\n\n"
+                f"🛡️ _Sniper is holding fire. It will NEVER book WL and will strike the second a confirmed berth opens!_"
             )
             keyboard = self.get_monitoring_keyboard(task_id)
             await self._send_or_edit_status(chat_id, task_id, status_text, keyboard=keyboard)
@@ -150,23 +158,28 @@ class BackgroundBookingWorker:
             verif_str = "IRCTC eWallet Auto-Debit (Zero Latency)"
 
         elif pay_mode == "UPI / Instant Pay":
+            upi_id = task.get("upi_id") or "Registered UPI App"
             async def upi_prompt_callback(chat_id, amount, timeout_sec):
                 prompt_text = (
-                    f"📱 *UPI PAYMENT COLLECT NOTIFICATION SENT*\n\n"
+                    f"📱 *UPI PAYMENT COLLECT NOTIFICATION DISPATCHED*\n\n"
+                    f"• *Destination UPI ID:* `{upi_id}`\n"
                     f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
                     f"• *Apps:* Google Pay / PhonePe / Paytm / BHIM\n"
                     f"• *Time Limit:* `{timeout_sec}` seconds\n\n"
-                    f"📲 *A payment collect request has arrived on your mobile phone!*\n"
-                    f"Please approve the payment in your UPI app, or reply with your authorization code below:"
+                    f"📲 *A payment collect push request has been dispatched to `{upi_id}`!*\n\n"
+                    "👉 Open your UPI app and tap 'Approve', then click the confirmation button below:"
                 )
-                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, parse_mode="Markdown")
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ I Have Approved in App", callback_data=f"approve_upi_{chat_id}")]
+                ])
+                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard, parse_mode="Markdown")
 
             payment_res = await self.service.request_upi_payment_and_wait(
                 chat_id=chat_id,
                 amount=amount,
                 prompt_callback=upi_prompt_callback
             )
-            verif_str = f"UPI Collect Approved (Code: `{payment_res.get('otp', 'AUTO-CONFIRM')}`)"
+            verif_str = f"UPI Collect Approved ({upi_id})"
 
         else:
             # Credit / Debit Card Flow

@@ -92,6 +92,7 @@ async def run_bot():
             bot.STATE_PASSENGER_BERTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_berth)],
             bot.STATE_IRCTC_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_irctc_user)],
             bot.STATE_IRCTC_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_irctc_pass)],
+            bot.STATE_UPI_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_upi_id)],
             bot.STATE_CARD_NUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_num)],
             bot.STATE_CARD_EXP: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_exp)],
             bot.STATE_CARD_CVV: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_cvv)],

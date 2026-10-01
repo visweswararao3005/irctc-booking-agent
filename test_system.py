@@ -65,6 +65,16 @@ async def run_tests():
     assert reset_card is None, f"Card reset failed, still got: {reset_card}"
     print("✅ Per-Chat Payment Card Management & Reset: PASSED")
 
+    # [Test 2f] Testing Per-Chat UPI ID Storage, Encryption & Reset...
+    print("\n[Test 2f] Testing Per-Chat UPI ID Storage, Encryption & Reset...")
+    await storage.save_user_upi(test_user_id, "balaji@paytm")
+    upi_id = await storage.get_decrypted_upi(test_user_id)
+    assert upi_id == "balaji@paytm", f"Expected 'balaji@paytm', got {upi_id}"
+    await storage.reset_user_upi(test_user_id)
+    reset_upi = await storage.get_decrypted_upi(test_user_id)
+    assert reset_upi is None, f"UPI reset failed, got {reset_upi}"
+    print("✅ Per-Chat UPI ID Management & Reset: PASSED")
+
     # [Test 2c] Testing User Session Persistence & Recovery...
     print("\n[Test 2c] Testing User Session Persistence & Recovery...")
     sample_session = {

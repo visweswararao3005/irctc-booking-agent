@@ -33,18 +33,19 @@ global_scheduler = None  # Injected in main.py
     STATE_PASSENGER_BERTH,
     STATE_IRCTC_USER,
     STATE_IRCTC_PASS,
+    STATE_UPI_ID,
     STATE_CARD_NUM,
     STATE_CARD_EXP,
     STATE_CARD_CVV,
     STATE_CARD_NAME,
     STATE_CONFIRM
-) = range(16)
+) = range(17)
 
 # Conversation States for Account Setup/Change
-STATE_SET_USER, STATE_SET_PASS = range(16, 18)
+STATE_SET_USER, STATE_SET_PASS = range(17, 19)
 
 # Conversation States for Standalone Card Setup/Change
-STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(18, 22)
+STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(19, 23)
 
 
 # ----------------- Account Management Handlers -----------------
@@ -964,7 +965,7 @@ async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     tg_id = update.effective_user.id
     pay_mode = context.user_data.get("payment_method", "Credit / Debit Card")
 
-    # Only credit/debit card requires card credentials
+    # 1. Credit / Debit Card Verification
     if pay_mode == "Credit / Debit Card":
         card = await storage.get_decrypted_card(tg_id)
         if not card or not card.get("card_number"):
@@ -977,7 +978,47 @@ async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode="Markdown"
             )
             return STATE_CARD_NUM
+        else:
+            context.user_data["card_on_file"] = True
 
+    # 2. UPI / Instant Pay Verification
+    elif pay_mode == "UPI / Instant Pay":
+        upi = await storage.get_decrypted_upi(tg_id)
+        if not upi:
+            await update.message.reply_text(
+                "📱 *UPI ID / Mobile Number Required*\n\n"
+                "Please enter your **UPI ID / VPA** or registered 10-digit mobile number:\n"
+                "*(Examples: `9876543210@paytm`, `username@oksbi`, `name@ybl`)*\n\n"
+                "When seats open, payment collect push notifications will be dispatched to this UPI address.",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown"
+            )
+            return STATE_UPI_ID
+        else:
+            context.user_data["upi_id"] = upi
+
+    return await render_confirmation(update, context)
+
+
+async def handle_inline_upi_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    upi_text = update.message.text.strip()
+    if is_cancel_command(upi_text):
+        return await cancel_booking(update, context)
+
+    # Basic UPI format validation: user@bank or 10-digit mobile number
+    if "@" not in upi_text and not (upi_text.isdigit() and len(upi_text) == 10):
+        await update.message.reply_text(
+            "❌ Invalid UPI format. Please enter a valid UPI ID (e.g. `9876543210@paytm`, `username@oksbi`) or 10-digit mobile number:"
+        )
+        return STATE_UPI_ID
+
+    if "@" not in upi_text and upi_text.isdigit() and len(upi_text) == 10:
+        upi_text = f"{upi_text}@upi"
+
+    tg_id = update.effective_user.id
+    context.user_data["upi_id"] = upi_text
+    await storage.save_user_upi(tg_id, upi_text)
+    await update.message.reply_text(f"📱 UPI ID `{upi_text}` encrypted and linked for this chat!")
     return await render_confirmation(update, context)
 
 async def handle_inline_irctc_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1048,9 +1089,10 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     if pay_mode == "Credit / Debit Card":
         payment_line = f"• *Payment Mode:* `Credit / Debit Card` ({card_mask} - 3D Secure OTP to mobile)"
     elif pay_mode == "IRCTC eWallet":
-        payment_line = "• *Payment Mode:* `IRCTC eWallet` (Direct auto-deduction; maintain balance)"
+        payment_line = "• *Payment Mode:* `IRCTC eWallet` (Direct auto-deduction; zero gateway latency)"
     else:
-        payment_line = "• *Payment Mode:* `UPI / Instant Pay` (Collect request alert to UPI app)"
+        upi_val = u.get("upi_id") or await storage.get_decrypted_upi(tg_id) or "Linked UPI"
+        payment_line = f"• *Payment Mode:* `UPI / Instant Pay` (`{upi_val}`)"
 
     summary = (
         "📋 *JOURNEY BOOKING SUMMARY:*\n"
@@ -1064,11 +1106,18 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Berth:* {u['p_berth']}\n"
         f"{payment_line}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👉 Type `CONFIRM` to book, or tap `⬅️ Back` to edit:"
+        "🎯 *CHOOSE EXECUTION MODE:*\n\n"
+        "1️⃣ *🎯 SEAT AVAILABILITY SNIPER* (Recommended)\n"
+        "   _Never books Waiting List! Continually monitors the train 24/7._\n"
+        "   _When first charting occurs (~4 hours before departure) and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly!_\n\n"
+        "2️⃣ *⚡ BOOK NOW*\n"
+        "   _Attempts immediate live booking right away._\n\n"
+        "👉 Tap an option below:"
     )
     confirm_kb = [
-        ["CONFIRM", "⬅️ Back"],
-        ["❌ Cancel"]
+        ["🎯 ACTIVATE SEAT SNIPER (Confirmed Berths Only)"],
+        ["⚡ BOOK NOW (Instant Checkout)"],
+        ["⬅️ Back", "❌ Cancel"]
     ]
     await update.message.reply_text(
         summary,
@@ -1094,9 +1143,14 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return STATE_PASSENGER_BERTH
 
-    if is_cancel_command(ans) or ans != "CONFIRM":
+    if is_cancel_command(ans):
         return await cancel_booking(update, context)
 
+    # Determine execution mode: default to SNIPER unless user explicitly requested INSTANT
+    if "BOOK NOW" in ans or "INSTANT" in ans:
+        booking_mode = "INSTANT"
+    else:
+        booking_mode = "SNIPER"
 
     u = context.user_data
     tg_id = update.effective_user.id
@@ -1123,15 +1177,17 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "train_name": u.get("train_name", "EXP"),
         "coach_class": u["coach_class"],
         "payment_method": u.get("payment_method", "Credit / Debit Card"),
+        "upi_id": u.get("upi_id") or await storage.get_decrypted_upi(tg_id),
+        "booking_mode": booking_mode,
         "passengers": passengers,
         "created_at": datetime.datetime.now().isoformat()
     }
 
     task_id = await storage.add_task(task_data)
 
-    if avail["is_available"]:
+    if booking_mode == "INSTANT" and avail["is_available"]:
         await update.message.reply_text(
-            "⚡ *Seats are Available!* Launching instant booking & payment checkout...",
+            "⚡ *Launching Instant Booking & Payment Checkout...*",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )
@@ -1139,15 +1195,20 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if global_scheduler:
             await global_scheduler.check_and_process_task(await storage.get_task(task_id), is_manual=False)
     else:
-        # Waiting list -> continuous monitor
+        # Sniper Mode Activated
         initial_card = (
-            f"⏳ *SEATS CURRENTLY IN WAITING LIST ({avail['status']})*\n\n"
-            f"🔄 *Continuous Polling Monitor Activated:*\n"
+            f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• *Task ID:* `{task_id}`\n"
-            f"• *Train:* `{u['train_number']}` ({u['coach_class']})\n"
-            f"• *Route:* {u['source']} ➔ {u['dest']}\n\n"
-            f"The bot will check automatically every 60 seconds and report each try.\n"
-            f"Click *'Try Now'* below to trigger an immediate check anytime! 👇"
+            f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')} ({u['coach_class']})\n"
+            f"• *Route:* {u['source']} ➔ {u['dest']} ({u['date']})\n"
+            f"• *Payment:* `{u.get('payment_method')}`\n"
+            f"• *Target:* Confirmed / Current Available Berths (CNF / CURR_AVBL)\n\n"
+            f"🛡️ *Chart Preparation Watchdog Active:*\n"
+            f"• The agent will **NEVER** book a Waiting List (WL) ticket.\n"
+            f"• When the first chart is prepared (~4 hours before departure) or any passenger cancels, all released quotas hit the reservation system.\n"
+            f"• The sniper will strike and book the confirmed seat within seconds!\n\n"
+            f"👉 Click *'Try Now'* below to test a live check anytime! 👇"
         )
         keyboard = InlineKeyboardMarkup([
             [
@@ -1169,7 +1230,7 @@ async def cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Operation cancelled. Type `hi` or `/start` to begin anytime.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ----------------- Inline Button Callbacks ('Try Now' & 'Cancel') -----------------
+# ----------------- Inline Button Callbacks ('Try Now', 'Approve UPI' & 'Cancel') -----------------
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1198,6 +1259,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
         else:
             await query.answer("Task was already stopped.", show_alert=True)
+    elif data.startswith("approve_upi_"):
+        chat_id_str = data.replace("approve_upi_", "")
+        c_id = int(chat_id_str) if chat_id_str.isdigit() else update.effective_chat.id
+        irctc_svc.provide_otp(c_id, "UPI_APPROVED_BY_USER")
+        await query.answer("Payment approval received! Generating confirmed ticket...", show_alert=True)
+        await query.edit_message_text("✅ *Payment Approval Confirmed!* Generating government PNR and ticket PDF...", parse_mode="Markdown")
 
 # ----------------- Global OTP Interceptor -----------------
 
