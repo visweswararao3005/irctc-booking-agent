@@ -225,7 +225,12 @@ class BackgroundBookingWorker:
             f"• *Passenger:* {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
             f"• *Berth Allocated:* S4, 34 (Lower Berth)\n"
             f"• *Payment Verified:* {verif_str}\n\n"
-            f"📄 *Your official e-Ticket (PDF) is attached below:* 👇"
+            "⚠️ *IMPORTANT TRAVEL & LEGAL ADVISORY:*\n"
+            "_The PDF attached below is an Agent Booking Receipt and is NOT an authorized ticket for train boarding._\n"
+            "Indian Railways rules mandate carrying the official government Electronic Reservation Slip (ERS).\n\n"
+            "🔗 *Download Official Govt ERS Ticket:* [irctc.co.in](https://www.irctc.co.in/nget/train-search)\n"
+            "🔍 *Verify Official PNR Status:* [indianrail.gov.in](https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html)\n\n"
+            f"📄 *Booking Confirmation Receipt (PDF) attached below:* 👇"
         )
         await self.bot_app.bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="Markdown")
 
@@ -234,8 +239,8 @@ class BackgroundBookingWorker:
             await self.bot_app.bot.send_document(
                 chat_id=chat_id,
                 document=doc,
-                filename=f"IRCTC_Ticket_{pnr}.pdf",
-                caption=f"Electronic Reservation Slip (PNR: {pnr})"
+                filename=f"Booking_Receipt_{pnr}.pdf",
+                caption=f"⚠️ Agent Booking Receipt (PNR: {pnr}). Not authorized for boarding. Download official ERS from irctc.co.in."
             )
 
         # Auto-cleanup: remove task from JSON file so no unnecessary data remains
