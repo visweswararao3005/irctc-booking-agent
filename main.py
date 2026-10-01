@@ -1,7 +1,8 @@
-"""Unified Application Runner: Starts the Telegram Bot and Background Polling Scheduler."""
 import asyncio
 import sys
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -14,7 +15,31 @@ from config import TELEGRAM_BOT_TOKEN
 import bot
 from scheduler import BackgroundBookingWorker
 
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status": "healthy", "service": "irctc-booking-agent"}')
+
+    def log_message(self, format, *args):
+        pass  # Silence routine health check logs
+
+def start_health_check_server():
+    """Starts a background HTTP server on PORT (default 8000) for Cloud health probes (Koyeb, Render, Railway, etc.)."""
+    port_str = os.getenv("PORT", "8000")
+    try:
+        port = int(port_str)
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        print(f"🌐 Cloud HTTP health probe server listening on port {port}")
+    except Exception as e:
+        print(f"[WARN] Could not start health check server on port {port_str}: {e}")
+
 async def run_bot():
+    start_health_check_server()
+
     if not TELEGRAM_BOT_TOKEN:
         print("=" * 60)
         print("⚠️ [CONFIGURATION REQUIRED]")
