@@ -40,18 +40,24 @@ def start_health_check_server():
 async def run_bot():
     start_health_check_server()
 
-    if not TELEGRAM_BOT_TOKEN:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or TELEGRAM_BOT_TOKEN or "").strip()
+
+    if not token:
         print("=" * 60)
-        print("⚠️ [CONFIGURATION REQUIRED]")
-        print("No TELEGRAM_BOT_TOKEN was found in .env!")
-        print("Please set your bot token from @BotFather in C:\\Users\\Balaji P\\Desktop\\project\\Train\\.env")
-        print("Example:")
-        print("TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxyz")
+        print("⚠️ [RENDER / CLOUD DEPLOYMENT NOTICE]")
+        print("TELEGRAM_BOT_TOKEN is not set in Environment Variables!")
+        print("Please go to your Render Dashboard -> Environment tab and add:")
+        print("  Key  : TELEGRAM_BOT_TOKEN")
+        print("  Value: 8646643318:AAHVFjcl4o0fc_PlSLD3HgWn5tcNSWBZgrE")
         print("=" * 60)
-        return
+        print("🌐 Cloud HTTP health probe server is running so Render will NOT fail.")
+        while not token:
+            await asyncio.sleep(5)
+            token = (os.getenv("TELEGRAM_BOT_TOKEN") or TELEGRAM_BOT_TOKEN or "").strip()
 
     print("🔧 Initializing Telegram Bot Application...")
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(token).build()
+
 
     # Initialize and attach the background scheduler worker
     scheduler = BackgroundBookingWorker(app, bot.irctc_svc)
