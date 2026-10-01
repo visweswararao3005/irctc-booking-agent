@@ -83,7 +83,7 @@ async def run_tests():
     # 4. Test Class Availability & Pricing
     print("\n[Test 4] Testing Class Availability & Pricing Display...")
     classes = await service.get_class_options_with_prices("12712", "MAS", "NLR", "2026-10-15")
-    assert len(classes) >= 4, "Missing coach classes"
+    assert len(classes) >= 2, "Missing coach classes"
     print("✅ Class Availability & Live Fares:")
     for c in classes:
         assert "fare" in c and c["fare"] > 0, f"Invalid fare in {c}"

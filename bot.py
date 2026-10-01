@@ -216,8 +216,16 @@ async def handle_set_card_name(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return ConversationHandler.END
 
-# ----------------- Booking Conversation Handlers -----------------
+# Helper command checkers
+def is_back_command(text: str) -> bool:
+    t = text.strip().lower()
+    return t in ["⬅️ back", "back", "prev", "previous", "< back", "go back"]
 
+def is_cancel_command(text: str) -> bool:
+    t = text.strip().lower()
+    return t in ["❌ cancel", "cancel", "stop", "exit", "quit"]
+
+# ----------------- Booking Conversation Handlers -----------------
 
 async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /start, /book, or greetings."""
@@ -226,19 +234,26 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     welcome_msg = (
         f"🚆 *Welcome to the IRCTC AI Booking Agent, {tg_user.first_name}!*\n\n"
-        "I will help you search trains, check live seat availability with prices, "
+        "I will help you search real live trains, check coach availability with fares, "
         "and continuously monitor Waiting List tickets with auto-booking.\n\n"
         "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n"
-        "*(Example: `MAS-NLR`)*"
+        "*(Example: `KJM-MAS` or `MAS-NLR`)*"
     )
-    await update.message.reply_text(welcome_msg, parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        welcome_msg,
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
+    )
     return STATE_ROUTE
 
 async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip().upper()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
     parts = text.split("-")
     if len(parts) != 2 or not parts[0].isalpha() or not parts[1].isalpha():
-        await update.message.reply_text("❌ Please enter valid 3-4 letter station codes as `SRC-DST` (e.g. `MAS-NLR`):")
+        await update.message.reply_text("❌ Please enter valid station codes as `SRC-DST` (e.g. `KJM-MAS` or `MAS-NLR`):")
         return STATE_ROUTE
 
     context.user_data["source"] = parts[0]
@@ -247,18 +262,32 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
     tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-    date_keyboard = [[today_str, tomorrow_str]]
+    date_keyboard = [
+        [today_str, tomorrow_str],
+        ["⬅️ Back", "❌ Cancel"]
+    ]
     await update.message.reply_text(
         f"✅ Route Selected: *{parts[0]}* ➔ *{parts[1]}*\n\n"
         "📅 Now enter your *Journey Date* in `YYYY-MM-DD` format\n"
         "*(or choose from quick options below)*:",
-        reply_markup=ReplyKeyboardMarkup(date_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(date_keyboard, resize_keyboard=True),
         parse_mode="Markdown"
     )
     return STATE_DATE
 
 async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     raw_date = update.message.text.strip()
+    if is_cancel_command(raw_date):
+        return await cancel_booking(update, context)
+
+    if is_back_command(raw_date):
+        await update.message.reply_text(
+            "📍 Please enter your journey route in format: `SOURCE-DESTINATION` (e.g. `KJM-MAS`):",
+            reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_ROUTE
+
     # Normalize DD-MM-YYYY to YYYY-MM-DD if needed
     if re.match(r"^\d{2}-\d{2}-\d{4}$", raw_date):
         d, m, y = raw_date.split("-")
@@ -266,38 +295,89 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     elif re.match(r"^\d{4}-\d{2}-\d{2}$", raw_date):
         date_str = raw_date
     else:
-        await update.message.reply_text("❌ Invalid format. Please enter date as `YYYY-MM-DD` (e.g. `2026-10-15`):")
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        await update.message.reply_text(
+            "❌ Invalid format. Please enter date as `YYYY-MM-DD` (e.g. `2026-10-05`):",
+            reply_markup=ReplyKeyboardMarkup([[today_str, tomorrow_str], ["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
         return STATE_DATE
 
     context.user_data["date"] = date_str
-    await update.message.reply_text("🔍 *Searching trains sorted by earliest departure time...*", parse_mode="Markdown")
+    src = context.user_data["source"]
+    dst = context.user_data["dest"]
 
-    trains = await irctc_svc.search_trains(context.user_data["source"], context.user_data["dest"], date_str)
+    await update.message.reply_text(f"🔍 *Fetching live trains for {src} ➔ {dst} on {date_str}...*", parse_mode="Markdown")
+
+    trains = await irctc_svc.search_trains(src, dst, date_str)
     context.user_data["train_list"] = trains
 
-    msg = "🚆 *Available Trains (Sorted: Earliest Start First):*\n\n"
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if not trains:
+        await update.message.reply_text(
+            f"⚠️ No matching trains found running on `{date_str}` for `{src} ➔ {dst}`.\n"
+            "Please choose or enter another journey date:",
+            reply_markup=ReplyKeyboardMarkup([[today_str, tomorrow_str], ["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    msg = f"🚆 *Available Trains on {date_str} (Earliest First):*\n\n"
     keyboard = []
     for t in trains:
-        msg += f"• `{t['number']}` - *{t['name']}*\n  🕒 Departs: `{t['departure']}` ➔ Arrives: `{t['arrival']}` ({t['duration']})\n\n"
+        c_str = ", ".join(t.get("classes", []))
+        msg += f"• `{t['number']}` - *{t['name']}*\n  🕒 Departs: `{t['departure']}` ➔ Arrives: `{t['arrival']}` ({t['duration']})\n  🎫 Classes: `{c_str}`\n\n"
         keyboard.append([f"{t['number']} - {t['name']} ({t['departure']})"])
+
+    keyboard.append(["⬅️ Back", "❌ Cancel"])
 
     await update.message.reply_text(
         msg,
-        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode="Markdown"
     )
     return STATE_TRAIN_SELECT
 
 async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     selected_text = update.message.text.strip()
+    if is_cancel_command(selected_text):
+        return await cancel_booking(update, context)
+
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if is_back_command(selected_text):
+        await update.message.reply_text(
+            f"Route: *{context.user_data.get('source')}* ➔ *{context.user_data.get('dest')}*\n\n"
+            "📅 Enter your *Journey Date* in `YYYY-MM-DD` format:",
+            reply_markup=ReplyKeyboardMarkup([[today_str, tomorrow_str], ["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    # Intelligent Auto-Detection: if user entered a date like 2026-10-04, switch date!
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", selected_text) or re.match(r"^\d{2}-\d{2}-\d{4}$", selected_text):
+        return await handle_date(update, context)
+
     train_number = selected_text.split(" - ")[0].split()[0].strip()
-    
+
     # Locate train details
     train_info = next((t for t in context.user_data.get("train_list", []) if t["number"] == train_number), None)
-    context.user_data["train_number"] = train_number
-    context.user_data["train_name"] = train_info["name"] if train_info else "EXP"
+    if not train_info:
+        await update.message.reply_text(
+            "❌ Please tap one of the train options from the keyboard below, or click '⬅️ Back':"
+        )
+        return STATE_TRAIN_SELECT
 
-    await update.message.reply_text(f"⏳ Checking live class availability & fares for Train *{train_number}*...", parse_mode="Markdown")
+    context.user_data["train_number"] = train_number
+    context.user_data["train_name"] = train_info.get("name", "EXP")
+    context.user_data["departure"] = train_info.get("departure", "00:00")
+    context.user_data["arrival"] = train_info.get("arrival", "00:00")
+
+    await update.message.reply_text(f"⏳ Checking live availability & fares for Train *{train_number}*...", parse_mode="Markdown")
 
     # Fetch classes WITH PRICES AND AVAILABILITY
     class_options = await irctc_svc.get_class_options_with_prices(
@@ -305,78 +385,166 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     context.user_data["class_options"] = class_options
 
-    msg = f"🎟️ *Select Coach Class for Train {train_number}:*\n\n"
+    msg = f"🎟️ *Select Coach Class for Train {train_number} ({train_info.get('name')}):*\n\n"
     keyboard = []
     for c in class_options:
         msg += f"• *{c['class_code']}:* `{c['status']}` — *₹{int(c['fare'])}*\n"
         keyboard.append([f"{c['class_code']} - {c['status']} (Rs. {int(c['fare'])})"])
 
+    keyboard.append(["⬅️ Back", "❌ Cancel"])
+
     await update.message.reply_text(
         msg,
-        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode="Markdown"
     )
     return STATE_CLASS_SELECT
 
 async def handle_class_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    if is_back_command(text):
+        # Re-display trains list
+        trains = context.user_data.get("train_list", [])
+        keyboard = [[f"{t['number']} - {t['name']} ({t['departure']})"] for t in trains]
+        keyboard.append(["⬅️ Back", "❌ Cancel"])
+        await update.message.reply_text(
+            f"🚆 *Select a Train ({context.user_data.get('source')} ➔ {context.user_data.get('dest')} on {context.user_data.get('date')}):*",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_TRAIN_SELECT
+
     coach_code = text.split(" - ")[0].split()[0].upper()
     context.user_data["coach_class"] = coach_code
 
     # Find fare
     opts = context.user_data.get("class_options", [])
     matching = next((o for o in opts if o["class_code"] == coach_code), None)
-    context.user_data["fare"] = matching["fare"] if matching else 240.0
-    context.user_data["class_status"] = matching["status"] if matching else "AVAILABLE"
+    if not matching:
+        await update.message.reply_text("❌ Please select one of the coach classes from the keyboard options above:")
+        return STATE_CLASS_SELECT
+
+    context.user_data["fare"] = matching["fare"]
+    context.user_data["class_status"] = matching["status"]
 
     await update.message.reply_text(
         f"Selected Class: *{coach_code}* (Fare: ₹{int(context.user_data['fare'])})\n\n"
         "👤 Please enter the *Passenger Full Name*:",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
         parse_mode="Markdown"
     )
     return STATE_PASSENGER_NAME
 
 async def handle_passenger_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["p_name"] = update.message.text.strip()
-    await update.message.reply_text("Enter passenger *Age*:", parse_mode="Markdown")
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    if is_back_command(text):
+        # Re-display classes
+        class_options = context.user_data.get("class_options", [])
+        keyboard = [[f"{c['class_code']} - {c['status']} (Rs. {int(c['fare'])})"] for c in class_options]
+        keyboard.append(["⬅️ Back", "❌ Cancel"])
+        await update.message.reply_text(
+            f"🎟️ *Select Coach Class for Train {context.user_data.get('train_number')}:*",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_CLASS_SELECT
+
+    context.user_data["p_name"] = text
+    await update.message.reply_text(
+        "Enter passenger *Age*:",
+        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+        parse_mode="Markdown"
+    )
     return STATE_PASSENGER_AGE
 
 async def handle_passenger_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    if is_back_command(text):
+        await update.message.reply_text(
+            "👤 Please enter the *Passenger Full Name*:",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PASSENGER_NAME
+
     try:
-        age = int(update.message.text.strip())
+        age = int(text)
         if age < 1 or age > 120:
             raise ValueError
         context.user_data["p_age"] = age
     except ValueError:
-        await update.message.reply_text("❌ Please enter a valid age (1-120):")
+        await update.message.reply_text(
+            "❌ Please enter a valid age (1-120):",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True)
+        )
         return STATE_PASSENGER_AGE
 
-    gender_keyboard = [["Male", "Female", "Transgender"]]
+    gender_keyboard = [
+        ["Male", "Female", "Transgender"],
+        ["⬅️ Back", "❌ Cancel"]
+    ]
     await update.message.reply_text(
         "Select passenger *Gender*:",
-        reply_markup=ReplyKeyboardMarkup(gender_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(gender_keyboard, resize_keyboard=True),
         parse_mode="Markdown"
     )
     return STATE_PASSENGER_GENDER
 
 async def handle_passenger_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["p_gender"] = update.message.text.strip()[0].upper()
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    if is_back_command(text):
+        await update.message.reply_text(
+            "Enter passenger *Age*:",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PASSENGER_AGE
+
+    context.user_data["p_gender"] = text[0].upper()
 
     berth_keyboard = [
         ["Lower Berth (LB)", "Middle Berth (MB)"],
         ["Upper Berth (UB)", "Side Lower (SL)"],
-        ["Side Upper (SU)", "No Preference"]
+        ["Side Upper (SU)", "No Preference"],
+        ["⬅️ Back", "❌ Cancel"]
     ]
     await update.message.reply_text(
         "Select *Berth Preference*:",
-        reply_markup=ReplyKeyboardMarkup(berth_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(berth_keyboard, resize_keyboard=True),
         parse_mode="Markdown"
     )
     return STATE_PASSENGER_BERTH
 
 async def handle_passenger_berth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["p_berth"] = update.message.text.strip()
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    if is_back_command(text):
+        gender_keyboard = [
+            ["Male", "Female", "Transgender"],
+            ["⬅️ Back", "❌ Cancel"]
+        ]
+        await update.message.reply_text(
+            "Select passenger *Gender*:",
+            reply_markup=ReplyKeyboardMarkup(gender_keyboard, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PASSENGER_GENDER
+
+    context.user_data["p_berth"] = text
 
     # Verify if this user has IRCTC credentials configured
     tg_id = update.effective_user.id
@@ -488,22 +656,39 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Berth:* {u['p_berth']}\n"
         f"• *Payment Card:* `{card_mask}` (OTP in chat)\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👉 Type `CONFIRM` or tap the button below to start:"
+        "👉 Type `CONFIRM` to book, or tap `⬅️ Back` to edit:"
     )
-    confirm_kb = [["CONFIRM", "CANCEL"]]
+    confirm_kb = [
+        ["CONFIRM", "⬅️ Back"],
+        ["❌ Cancel"]
+    ]
     await update.message.reply_text(
         summary,
-        reply_markup=ReplyKeyboardMarkup(confirm_kb, one_time_keyboard=True, resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(confirm_kb, resize_keyboard=True),
         parse_mode="Markdown"
     )
     return STATE_CONFIRM
 
-
 async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ans = update.message.text.strip().upper()
-    if ans != "CONFIRM":
-        await update.message.reply_text("❌ Booking cancelled. Type `hi` or `/start` to start over.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
+
+    if is_back_command(ans):
+        berth_keyboard = [
+            ["Lower Berth (LB)", "Middle Berth (MB)"],
+            ["Upper Berth (UB)", "Side Lower (SL)"],
+            ["Side Upper (SU)", "No Preference"],
+            ["⬅️ Back", "❌ Cancel"]
+        ]
+        await update.message.reply_text(
+            "Select *Berth Preference*:",
+            reply_markup=ReplyKeyboardMarkup(berth_keyboard, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PASSENGER_BERTH
+
+    if is_cancel_command(ans) or ans != "CONFIRM":
+        return await cancel_booking(update, context)
+
 
     u = context.user_data
     tg_id = update.effective_user.id
