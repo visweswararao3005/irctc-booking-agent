@@ -5,7 +5,6 @@ import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -41,6 +40,21 @@ def start_health_check_server():
     except Exception as e:
         print(f"[WARN] Could not start health check server on port {port_str}: {e}")
 
+async def render_keep_alive_loop():
+    """Pings the web health probe every 10 minutes to prevent Render free container from idling to sleep."""
+    external_url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("PING_URL")
+    port = os.getenv("PORT", "8000")
+    target = external_url or f"http://127.0.0.1:{port}"
+    print(f"🔄 Render 24/7 Keep-Alive watchdog active for: {target}")
+    while True:
+        await asyncio.sleep(600)  # Ping every 10 minutes
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.get(target)
+                print(f"[Keep-Alive] Pinged {target} -> status {res.status_code}")
+        except Exception:
+            pass
+
 async def run_bot():
     start_health_check_server()
 
@@ -62,25 +76,9 @@ async def run_bot():
     print("🔧 Initializing Telegram Bot Application...")
     app = Application.builder().token(token).build()
 
-
     # Initialize and attach the background scheduler worker
     scheduler = BackgroundBookingWorker(app, bot.irctc_svc)
     bot.global_scheduler = scheduler
-
-async def render_keep_alive_loop():
-    """Pings the web health probe every 10 minutes to prevent Render free container from idling to sleep."""
-    external_url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("PING_URL")
-    port = os.getenv("PORT", "8000")
-    target = external_url or f"http://127.0.0.1:{port}"
-    print(f"🔄 Render 24/7 Keep-Alive watchdog active for: {target}")
-    while True:
-        await asyncio.sleep(600)  # Ping every 10 minutes
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(target)
-                print(f"[Keep-Alive] Pinged {target} -> status {res.status_code}")
-        except Exception:
-            pass
 
     ROUTE_PATTERN = re.compile(r"^[A-Za-z]{2,6}\s*(?:->|➔|TO|-|–|/|\s)\s*[A-Za-z]{2,6}$", re.IGNORECASE)
     TRAIN_PATTERN = re.compile(r"^\d{5}\s*-", re.IGNORECASE)
