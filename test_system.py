@@ -148,6 +148,25 @@ async def run_tests():
     assert res.get("otp") == "481920", f"Wrong OTP received: {res.get('otp')}"
     print(f"✅ Card Payment & OTP Relay: PASSED (Txn ID: {res.get('transaction_id')})")
 
+    # 7b. Test IRCTC eWallet Instant Payment
+    print("\n[Test 7b] Testing IRCTC eWallet Instant Payment Flow...")
+    wallet_res = await service.request_ewallet_payment(test_user_id, 240.0)
+    assert wallet_res.get("success") is True
+    assert "WALLET" in wallet_res.get("transaction_id")
+    print(f"✅ eWallet Payment: PASSED (Txn ID: {wallet_res.get('transaction_id')})")
+
+    # 7c. Test UPI Mobile Collect Notification Flow
+    print("\n[Test 7c] Testing UPI Mobile Collect Request Flow...")
+    async def dummy_upi_prompt(chat_id, amount, timeout_sec):
+        print(f"   [Mock Telegram] Push collect notification sent to chat {chat_id}: Rs. {amount}")
+        await asyncio.sleep(0.1)
+        IRCTCService.provide_otp(chat_id, "UPI-APPROVE-9988")
+
+    upi_res = await service.request_upi_payment_and_wait(test_user_id, 240.0, dummy_upi_prompt)
+    assert upi_res.get("success") is True
+    assert upi_res.get("otp") == "UPI-APPROVE-9988"
+    print(f"✅ UPI Mobile Collect: PASSED (Txn ID: {upi_res.get('transaction_id')})")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

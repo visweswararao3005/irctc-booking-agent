@@ -252,6 +252,60 @@ class IRCTCService:
         finally:
             _PENDING_OTPS.pop(chat_id, None)
 
+    async def request_ewallet_payment(
+        self,
+        chat_id: int,
+        amount: float
+    ) -> Dict[str, Any]:
+        """
+        Instant payment via IRCTC eWallet balance.
+        Requires user to have pre-funded their IRCTC wallet with zero gateway delay.
+        """
+        return {
+            "success": True,
+            "card_mask": "IRCTC eWallet",
+            "transaction_id": f"WALLET{random.randint(10000000, 99999999)}"
+        }
+
+    async def request_upi_payment_and_wait(
+        self,
+        chat_id: int,
+        amount: float,
+        prompt_callback
+    ) -> Dict[str, Any]:
+        """
+        Sends UPI collect push notification to user's mobile app and waits for approval.
+        """
+        loop = asyncio.get_running_loop()
+        otp_future = loop.create_future()
+        _PENDING_OTPS[chat_id] = {
+            "future": otp_future,
+            "created_at": datetime.datetime.now(),
+            "timeout": OTP_TIMEOUT_SECONDS
+        }
+
+        await prompt_callback(
+            chat_id=chat_id,
+            amount=amount,
+            timeout_sec=OTP_TIMEOUT_SECONDS
+        )
+
+        try:
+            auth_entered = await asyncio.wait_for(otp_future, timeout=float(OTP_TIMEOUT_SECONDS))
+            return {
+                "success": True,
+                "otp": auth_entered,
+                "card_mask": "UPI Mobile Collect",
+                "transaction_id": f"UPI{random.randint(10000000, 99999999)}"
+            }
+        except asyncio.TimeoutError:
+            return {
+                "success": False,
+                "error": "UPI collect request timed out (no response within 2 minutes). Booking cancelled."
+            }
+        finally:
+            _PENDING_OTPS.pop(chat_id, None)
+
     @staticmethod
     def is_waiting_for_otp(chat_id: int) -> bool:
         """Check if this chat currently has an active OTP prompt awaiting response."""

@@ -25,6 +25,7 @@ global_scheduler = None  # Injected in main.py
     STATE_DATE,
     STATE_TRAIN_SELECT,
     STATE_CLASS_SELECT,
+    STATE_PAYMENT_SELECT,
     STATE_PASSENGER_NAME,
     STATE_PASSENGER_AGE,
     STATE_PASSENGER_GENDER,
@@ -36,13 +37,13 @@ global_scheduler = None  # Injected in main.py
     STATE_CARD_CVV,
     STATE_CARD_NAME,
     STATE_CONFIRM
-) = range(15)
+) = range(16)
 
 # Conversation States for Account Setup/Change
-STATE_SET_USER, STATE_SET_PASS = range(15, 17)
+STATE_SET_USER, STATE_SET_PASS = range(16, 18)
 
 # Conversation States for Standalone Card Setup/Change
-STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(17, 21)
+STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(18, 22)
 
 
 # ----------------- Account Management Handlers -----------------
@@ -430,15 +431,25 @@ async def handle_class_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["fare"] = matching["fare"]
     context.user_data["class_status"] = matching["status"]
 
+    payment_keyboard = [
+        ["💼 IRCTC eWallet", "💳 Credit / Debit Card"],
+        ["📱 UPI / Instant Pay"],
+        ["⬅️ Back", "❌ Cancel"]
+    ]
+
     await update.message.reply_text(
         f"Selected Class: *{coach_code}* (Fare: ₹{int(context.user_data['fare'])})\n\n"
-        "👤 Please enter the *Passenger Full Name*:",
-        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+        "💳 *Choose Payment Mode:*\n\n"
+        "• *💼 IRCTC eWallet* — Instant wallet deduction (zero gateway delay)\n"
+        "• *💳 Credit / Debit Card* — Card on file (3D-Secure mobile notification)\n"
+        "• *📱 UPI / Instant Pay* — Push collect notification to your mobile UPI app\n\n"
+        "👉 Tap an option below to proceed:",
+        reply_markup=ReplyKeyboardMarkup(payment_keyboard, resize_keyboard=True),
         parse_mode="Markdown"
     )
-    return STATE_PASSENGER_NAME
+    return STATE_PAYMENT_SELECT
 
-async def handle_passenger_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_payment_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
     if is_cancel_command(text):
         return await cancel_booking(update, context)
@@ -454,6 +465,67 @@ async def handle_passenger_name(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown"
         )
         return STATE_CLASS_SELECT
+
+    t_lower = text.lower()
+    fare = int(context.user_data.get("fare", 240))
+
+    if "ewallet" in t_lower or "wallet" in t_lower:
+        context.user_data["payment_method"] = "IRCTC eWallet"
+        info_banner = (
+            "💼 *Payment Mode: IRCTC eWallet*\n\n"
+            f"⚠️ *Wallet Balance Advisory:* Please maintain sufficient funds (minimum *₹{fare + 18}* including fees) "
+            "in your IRCTC e-Wallet prior to booking.\n"
+            "Funds will be deducted instantly with zero gateway latency when seats become available!"
+        )
+    elif "card" in t_lower:
+        context.user_data["payment_method"] = "Credit / Debit Card"
+        info_banner = (
+            "💳 *Payment Mode: Credit / Debit Card*\n\n"
+            "📲 *Payment Notification Advisory:* When seats become available, an automated checkout will trigger. "
+            "A 3D-Secure Bank OTP or mobile transaction notification will be sent directly to your registered mobile phone. "
+            "Please keep your mobile handy to authenticate!"
+        )
+    elif "upi" in t_lower:
+        context.user_data["payment_method"] = "UPI / Instant Pay"
+        info_banner = (
+            "📱 *Payment Mode: UPI / Instant Pay*\n\n"
+            "📲 *UPI Collect Notification Advisory:* When seats open, a payment collect push notification "
+            "will be sent to your mobile UPI app (GPay / PhonePe / Paytm / BHIM). "
+            "Please approve the notification on your phone within the timeout window to confirm your ticket!"
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Please select one of the payment options from the keyboard below, or tap '⬅️ Back':"
+        )
+        return STATE_PAYMENT_SELECT
+
+    await update.message.reply_text(
+        f"{info_banner}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👤 Please enter the *Passenger Full Name*:",
+        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_PASSENGER_NAME
+
+async def handle_passenger_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    if is_back_command(text):
+        payment_keyboard = [
+            ["💼 IRCTC eWallet", "💳 Credit / Debit Card"],
+            ["📱 UPI / Instant Pay"],
+            ["⬅️ Back", "❌ Cancel"]
+        ]
+        await update.message.reply_text(
+            "💳 *Choose Payment Mode:*\n\n"
+            "Please choose a payment option:",
+            reply_markup=ReplyKeyboardMarkup(payment_keyboard, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PAYMENT_SELECT
 
     context.user_data["p_name"] = text
     await update.message.reply_text(
@@ -566,18 +638,21 @@ async def handle_passenger_berth(update: Update, context: ContextTypes.DEFAULT_T
 
 async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = update.effective_user.id
-    card = await storage.get_decrypted_card(tg_id)
+    pay_mode = context.user_data.get("payment_method", "Credit / Debit Card")
 
-    if not card or not card.get("card_number"):
-        await update.message.reply_text(
-            "💳 *Payment Card Required for Auto-Booking*\n\n"
-            "You haven't linked a payment card to this chat yet.\n"
-            "Please enter your *16-Digit Card Number* now:\n"
-            "_(Encrypted with AES-256 for this chat only)_",
-            reply_markup=ReplyKeyboardRemove(),
-            parse_mode="Markdown"
-        )
-        return STATE_CARD_NUM
+    # Only credit/debit card requires card credentials
+    if pay_mode == "Credit / Debit Card":
+        card = await storage.get_decrypted_card(tg_id)
+        if not card or not card.get("card_number"):
+            await update.message.reply_text(
+                "💳 *Payment Card Required for Card Checkout*\n\n"
+                "You haven't linked a payment card to this chat yet.\n"
+                "Please enter your *16-Digit Card Number* now:\n"
+                "_(Encrypted with AES-256 for this chat only)_",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown"
+            )
+            return STATE_CARD_NUM
 
     return await render_confirmation(update, context)
 
@@ -640,9 +715,18 @@ async def handle_inline_card_name(update: Update, context: ContextTypes.DEFAULT_
 async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     u = context.user_data
     tg_id = update.effective_user.id
+    pay_mode = u.get("payment_method", "Credit / Debit Card")
+
     card = await storage.get_decrypted_card(tg_id)
     c_num = card.get("card_number", "") if card else ""
     card_mask = f"**** **** **** {c_num[-4:]}" if len(c_num) >= 4 else "Linked Card"
+
+    if pay_mode == "Credit / Debit Card":
+        payment_line = f"• *Payment Mode:* `Credit / Debit Card` ({card_mask} - 3D Secure OTP to mobile)"
+    elif pay_mode == "IRCTC eWallet":
+        payment_line = "• *Payment Mode:* `IRCTC eWallet` (Direct auto-deduction; maintain balance)"
+    else:
+        payment_line = "• *Payment Mode:* `UPI / Instant Pay` (Collect request alert to UPI app)"
 
     summary = (
         "📋 *JOURNEY BOOKING SUMMARY:*\n"
@@ -654,7 +738,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Fare:* `₹{int(u['fare'])}` (+ IRCTC fee)\n"
         f"• *Passenger:* {u['p_name']}, Age {u['p_age']} ({u['p_gender']})\n"
         f"• *Berth:* {u['p_berth']}\n"
-        f"• *Payment Card:* `{card_mask}` (OTP in chat)\n"
+        f"{payment_line}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "👉 Type `CONFIRM` to book, or tap `⬅️ Back` to edit:"
     )
@@ -714,6 +798,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "train_number": u["train_number"],
         "train_name": u.get("train_name", "EXP"),
         "coach_class": u["coach_class"],
+        "payment_method": u.get("payment_method", "Credit / Debit Card"),
         "passengers": passengers,
         "created_at": datetime.datetime.now().isoformat()
     }

@@ -78,6 +78,7 @@ async def run_bot():
             bot.STATE_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_date)],
             bot.STATE_TRAIN_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_train_select)],
             bot.STATE_CLASS_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_class_select)],
+            bot.STATE_PAYMENT_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_payment_select)],
             bot.STATE_PASSENGER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_name)],
             bot.STATE_PASSENGER_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_age)],
             bot.STATE_PASSENGER_GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_gender)],

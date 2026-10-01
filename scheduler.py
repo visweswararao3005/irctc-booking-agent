@@ -137,28 +137,57 @@ class BackgroundBookingWorker:
         chat_id = task["telegram_chat_id"]
         amount = avail.get("fare", 240.0)
 
-        # Callback function for OTP prompt
-        async def otp_prompt_callback(chat_id, card_mask, amount, timeout_sec):
-            prompt_text = (
-                f"🔐 *BANK 3D-SECURE OTP REQUIRED*\n\n"
-                f"• *Card:* `{card_mask}`\n"
-                f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
-                f"• *Time Limit:* `{timeout_sec}` seconds\n\n"
-                f"📲 *Please enter the OTP sent to your registered mobile phone directly in this chat:* 👇"
+        # Determine payment mode chosen by user
+        pay_mode = task.get("payment_method", "Credit / Debit Card")
+
+        if pay_mode == "IRCTC eWallet":
+            await self.bot_app.bot.send_message(
+                chat_id=chat_id,
+                text="💼 *Executing instant payment via IRCTC e-Wallet balance...*",
+                parse_mode="Markdown"
             )
-            await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, parse_mode="Markdown")
+            payment_res = await self.service.request_ewallet_payment(chat_id=chat_id, amount=amount)
+            verif_str = "IRCTC eWallet Auto-Debit (Zero Latency)"
 
-        # Get this specific user's decrypted card
-        card_data = await storage.get_decrypted_card(task.get("telegram_id"))
+        elif pay_mode == "UPI / Instant Pay":
+            async def upi_prompt_callback(chat_id, amount, timeout_sec):
+                prompt_text = (
+                    f"📱 *UPI PAYMENT COLLECT NOTIFICATION SENT*\n\n"
+                    f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
+                    f"• *Apps:* Google Pay / PhonePe / Paytm / BHIM\n"
+                    f"• *Time Limit:* `{timeout_sec}` seconds\n\n"
+                    f"📲 *A payment collect request has arrived on your mobile phone!*\n"
+                    f"Please approve the payment in your UPI app, or reply with your authorization code below:"
+                )
+                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, parse_mode="Markdown")
 
-        # Request payment & wait for user OTP
-        payment_res = await self.service.request_card_payment_and_wait_for_otp(
-            chat_id=chat_id,
-            amount=amount,
-            prompt_callback=otp_prompt_callback,
-            card_info=card_data
-        )
+            payment_res = await self.service.request_upi_payment_and_wait(
+                chat_id=chat_id,
+                amount=amount,
+                prompt_callback=upi_prompt_callback
+            )
+            verif_str = f"UPI Collect Approved (Code: `{payment_res.get('otp', 'AUTO-CONFIRM')}`)"
 
+        else:
+            # Credit / Debit Card Flow
+            async def otp_prompt_callback(chat_id, card_mask, amount, timeout_sec):
+                prompt_text = (
+                    f"🔐 *BANK 3D-SECURE OTP REQUIRED*\n\n"
+                    f"• *Card:* `{card_mask}`\n"
+                    f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
+                    f"• *Time Limit:* `{timeout_sec}` seconds\n\n"
+                    f"📲 *Please enter the OTP sent to your registered mobile phone directly in this chat:* 👇"
+                )
+                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, parse_mode="Markdown")
+
+            card_data = await storage.get_decrypted_card(task.get("telegram_id"))
+            payment_res = await self.service.request_card_payment_and_wait_for_otp(
+                chat_id=chat_id,
+                amount=amount,
+                prompt_callback=otp_prompt_callback,
+                card_info=card_data
+            )
+            verif_str = f"Bank 3D-Secure OTP `{payment_res.get('otp')}`"
 
         if not payment_res.get("success"):
             await self.bot_app.bot.send_message(
@@ -166,7 +195,6 @@ class BackgroundBookingWorker:
                 text=f"❌ *Booking Failed:* {payment_res.get('error')}",
                 parse_mode="Markdown"
             )
-            # Re-queue task or keep monitoring
             return
 
         # Payment succeeded! Generate PNR and PDF ticket
@@ -181,7 +209,7 @@ class BackgroundBookingWorker:
             "coach_class": task["coach_class"],
             "fare": amount,
             "passengers": task.get("passengers", []),
-            "payment_method": f"Credit Card ({payment_res.get('card_mask')})"
+            "payment_method": f"{pay_mode} ({payment_res.get('card_mask', 'Verified')})"
         }
 
         pdf_path = generate_ticket_pdf(booking_data)
@@ -196,7 +224,7 @@ class BackgroundBookingWorker:
             f"• *Journey Date:* {task['journey_date']}\n"
             f"• *Passenger:* {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
             f"• *Berth Allocated:* S4, 34 (Lower Berth)\n"
-            f"• *Payment Verified:* Bank OTP `{payment_res.get('otp')}`\n\n"
+            f"• *Payment Verified:* {verif_str}\n\n"
             f"📄 *Your official e-Ticket (PDF) is attached below:* 👇"
         )
         await self.bot_app.bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="Markdown")
