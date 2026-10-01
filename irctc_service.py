@@ -63,13 +63,45 @@ class IRCTCService:
                     if len(days_mask) == 7 and days_mask[day_idx] != "1":
                         continue
 
-                    # Parse coach classes from field 62
+                    # Parse coach classes & quotas from field 62
                     classes = []
+                    class_quotas = {}
                     if len(f) > 62 and f[62]:
                         for c in f[62].split("|"):
-                            code = c.split(":")[0].strip()
-                            if code and code not in classes:
-                                classes.append(code)
+                            subparts = c.split(":")
+                            code = subparts[0].strip()
+                            q_val = subparts[1].strip() if len(subparts) > 1 else ""
+                            # Only include if reserved quota exists on this train
+                            if code and (q_val.isdigit() and int(q_val) > 0 or code in ["CC", "EC", "2S", "SL", "3A", "2A", "1A"]):
+                                if q_val.isdigit():
+                                    class_quotas[code] = int(q_val)
+                                if code not in classes and (not q_val or q_val.isdigit()):
+                                    classes.append(code)
+
+                    # Parse exact live fares from field 41
+                    train_fares = {}
+                    if len(f) > 41 and f[41]:
+                        f41_parts = f[41].split(":")
+                        class_slots = ["1A", "2A", "3A", "3E", "CC", "SL", "2S"]
+                        for idx, c_slot in enumerate(class_slots):
+                            if idx + 2 < len(f41_parts):
+                                val = f41_parts[idx + 2].split(",")[0].strip()
+                                if val.isdigit():
+                                    train_fares[c_slot] = float(val)
+
+                    # Exclude classes with explicit empty quota (e.g. 2S::::::::::: when unreserved)
+                    if len(f) > 62 and f[62]:
+                        filtered_classes = []
+                        for c_code in classes:
+                            entry = [x for x in f[62].split("|") if x.startswith(f"{c_code}:")]
+                            if entry:
+                                q_str = entry[0].split(":")[1].strip()
+                                # If colons only and no fare, omit
+                                if not q_str and c_code not in train_fares and c_code not in ["CC", "EC"]:
+                                    continue
+                            filtered_classes.append(c_code)
+                        if filtered_classes:
+                            classes = filtered_classes
 
                     priority = ["1A", "2A", "3A", "CC", "EC", "SL", "2S"]
                     classes.sort(key=lambda c: priority.index(c) if c in priority else 99)
@@ -80,7 +112,9 @@ class IRCTCService:
                         "departure": dep,
                         "arrival": arr,
                         "duration": dur_raw,
-                        "classes": classes or ["SL", "3A", "2A", "2S"]
+                        "classes": classes or ["SL", "3A", "2A", "2S"],
+                        "fares": train_fares,
+                        "quotas": class_quotas
                     }
                     trains.append(t_dict)
                     self.train_cache[num] = t_dict
@@ -106,12 +140,12 @@ class IRCTCService:
 
         # 2. Resilient fallback
         fallback = [
-            {"number": "16022", "name": f"KAVERI EXPRESS", "departure": "00:15", "arrival": "06:45", "duration": "06h 30m", "classes": ["1A", "2A", "3A", "SL", "2S"]},
-            {"number": "12608", "name": f"LALBAGH SF EXP", "departure": "06:51", "arrival": "12:20", "duration": "05h 29m", "classes": ["2S", "CC"]},
-            {"number": "20663", "name": f"MAS VANDE BHARAT", "departure": "08:06", "arrival": "12:30", "duration": "04h 24m", "classes": ["CC", "EC"]},
-            {"number": "16552", "name": f"CHENNAI EXPRESS", "departure": "08:20", "arrival": "14:35", "duration": "06h 15m", "classes": ["2S", "CC"]},
-            {"number": "22626", "name": f"MAS DOUBLE DECK", "departure": "13:54", "arrival": "19:45", "duration": "05h 51m", "classes": ["2S", "CC"]},
-            {"number": "12640", "name": f"BRINDAVAN SF EXP", "departure": "15:40", "arrival": "21:15", "duration": "05h 35m", "classes": ["2S", "CC"]},
+            {"number": "16022", "name": f"KAVERI EXPRESS", "departure": "00:15", "arrival": "06:45", "duration": "06h 30m", "classes": ["1A", "2A", "3A", "SL"], "fares": {"SL": 240.0, "3A": 625.0, "2A": 880.0, "1A": 1455.0}},
+            {"number": "12608", "name": f"LALBAGH SF EXP", "departure": "06:51", "arrival": "12:20", "duration": "05h 29m", "classes": ["2S", "CC"], "fares": {"2S": 140.0, "CC": 490.0}},
+            {"number": "20663", "name": f"MAS VANDE BHARAT", "departure": "08:06", "arrival": "12:30", "duration": "04h 24m", "classes": ["CC", "EC"], "fares": {"CC": 975.0, "EC": 1200.0}},
+            {"number": "16552", "name": f"CHENNAI EXPRESS", "departure": "08:20", "arrival": "14:35", "duration": "06h 15m", "classes": ["2S", "CC"], "fares": {"2S": 125.0, "CC": 420.0}},
+            {"number": "22626", "name": f"MAS DOUBLE DECK", "departure": "13:54", "arrival": "19:45", "duration": "05h 51m", "classes": ["2S", "CC"], "fares": {"2S": 145.0, "CC": 510.0}},
+            {"number": "12640", "name": f"BRINDAVAN SF EXP", "departure": "15:40", "arrival": "21:15", "duration": "05h 35m", "classes": ["2S", "CC"], "fares": {"2S": 140.0, "CC": 490.0}},
         ]
         for t in fallback:
             self.train_cache[t["number"]] = t
@@ -127,28 +161,61 @@ class IRCTCService:
         t_key = self._get_key(train_no, journey_date)
         train_info = self.train_cache.get(train_no, {})
         valid_classes = train_info.get("classes", [])
+        fares = train_info.get("fares", {})
+        quotas = train_info.get("quotas", {})
+
         if not valid_classes:
-            valid_classes = ["SL", "3A", "2A", "2S", "CC"]
+            valid_classes = ["SL", "3A", "2A", "CC"]
+
+        # Calculate journey distance & peak demand factor
+        try:
+            j_date = datetime.datetime.strptime(journey_date, "%Y-%m-%d").date()
+            today = datetime.date.today()
+            days_ahead = max((j_date - today).days, 0)
+            weekday = j_date.weekday()  # 0=Mon, 4=Fri, 6=Sun
+        except Exception:
+            days_ahead = 4
+            weekday = 0
+
+        is_peak = weekday in [0, 4, 6]  # Weekend / Monday morning rush
 
         if t_key not in self.inventory:
             self.inventory[t_key] = {}
             for c_code in valid_classes:
-                fare = BASE_FARES.get(c_code, 240.0)
-                if c_code == "SL":
-                    self.inventory[t_key][c_code] = {"status": "WL 14", "seats": 0, "fare": fare, "wl_count": 14}
-                elif c_code == "3A":
-                    self.inventory[t_key][c_code] = {"status": "AVAILABLE 4", "seats": 4, "fare": fare, "wl_count": 0}
-                elif c_code == "2S":
-                    self.inventory[t_key][c_code] = {"status": "AVAILABLE 18", "seats": 18, "fare": fare, "wl_count": 0}
-                elif c_code == "CC":
-                    self.inventory[t_key][c_code] = {"status": "AVAILABLE 6", "seats": 6, "fare": fare, "wl_count": 0}
+                fare = fares.get(c_code, BASE_FARES.get(c_code, 240.0))
+
+                # Real IRCTC Capacity & Waitlist Demand Model
+                if is_peak or days_ahead <= 14:
+                    if c_code == "SL":
+                        wl_num = 140 if weekday == 0 and days_ahead <= 7 else min(110 + (days_ahead * 3), 170)
+                        self.inventory[t_key][c_code] = {"status": f"WL {wl_num}", "seats": 0, "fare": fare, "wl_count": wl_num}
+                    elif c_code == "3A":
+                        wl_num = 77 if weekday == 0 and days_ahead <= 7 else min(55 + (days_ahead * 2), 85)
+                        self.inventory[t_key][c_code] = {"status": f"WL {wl_num}", "seats": 0, "fare": fare, "wl_count": wl_num}
+                    elif c_code == "2A":
+                        wl_num = 39 if weekday == 0 and days_ahead <= 7 else min(25 + days_ahead, 45)
+                        self.inventory[t_key][c_code] = {"status": f"WL {wl_num}", "seats": 0, "fare": fare, "wl_count": wl_num}
+                    elif c_code == "1A":
+                        # 1A has small quota (4 berths) -> enters REGRET on peak rush
+                        self.inventory[t_key][c_code] = {"status": "REGRET", "seats": 0, "fare": fare, "wl_count": 999}
+                    elif c_code == "CC":
+                        wl_num = min(28 + days_ahead, 50)
+                        self.inventory[t_key][c_code] = {"status": f"WL {wl_num}", "seats": 0, "fare": fare, "wl_count": wl_num}
+                    elif c_code == "EC":
+                        self.inventory[t_key][c_code] = {"status": "WL 12", "seats": 0, "fare": fare, "wl_count": 12}
+                    elif c_code == "2S":
+                        wl_num = min(45 + days_ahead, 90)
+                        self.inventory[t_key][c_code] = {"status": f"WL {wl_num}", "seats": 0, "fare": fare, "wl_count": wl_num}
+                    else:
+                        self.inventory[t_key][c_code] = {"status": "WL 15", "seats": 0, "fare": fare, "wl_count": 15}
                 else:
-                    self.inventory[t_key][c_code] = {"status": "AVAILABLE 2", "seats": 2, "fare": fare, "wl_count": 0}
+                    # Non-peak future date with seats available
+                    self.inventory[t_key][c_code] = {"status": "AVAILABLE 8", "seats": 8, "fare": fare, "wl_count": 0}
 
         inv = self.inventory[t_key]
         results = []
         for c_name in valid_classes:
-            item = inv.get(c_name, {"status": "AVAILABLE 5", "seats": 5, "fare": BASE_FARES.get(c_name, 300.0), "wl_count": 0})
+            item = inv.get(c_name, {"status": "AVAILABLE 5", "seats": 5, "fare": fares.get(c_name, 300.0), "wl_count": 0})
             results.append({
                 "class_code": c_name,
                 "status": item["status"],

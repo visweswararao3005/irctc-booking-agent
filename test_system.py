@@ -91,10 +91,42 @@ async def run_tests():
     future_date = today + datetime.timedelta(days=5)
     assert past_date < today, "Past date calculation error"
     assert future_date >= today, "Future date calculation error"
-    from bot import get_date_keyboard
+    from bot import get_date_keyboard, adjust_date, build_date_picker_inline_keyboard, format_date_picker_text
     kb = get_date_keyboard()
     assert kb is not None
     print(f"✅ Current Date & Future Date Constraints: PASSED (Today is {today})")
+
+    # [Test 2e] Testing Interactive Date Picker & Stepper Controls...
+    print("\n[Test 2e] Testing Interactive Date Picker Steppers (Year, Month, Day)...")
+    stepped_next_day = adjust_date(today, delta_d=1)
+    assert stepped_next_day == today + datetime.timedelta(days=1)
+
+    stepped_past = adjust_date(today, delta_d=-10)
+    assert stepped_past == today, "Past date must be clamped to today"
+
+    stepped_far = adjust_date(today, delta_y=2)
+    max_advance = today + datetime.timedelta(days=120)
+    assert stepped_far == max_advance, "Dates beyond 120 days must be clamped"
+
+    # Test month end adjustment: e.g. Jan 31 + 1 month clamps to Feb 28
+    jan31 = datetime.date(2026, 1, 31)
+    feb_clamped = adjust_date(jan31, delta_m=1)
+    # Clamp will also enforce today <= target <= today + 120
+    assert feb_clamped >= today
+
+    inline_kb = build_date_picker_inline_keyboard(today)
+    all_cal_callbacks = [btn.callback_data for row in inline_kb.inline_keyboard for btn in row]
+    assert any("cal_prev_y_" in c for c in all_cal_callbacks), "Missing Year prev stepper"
+    assert any("cal_next_y_" in c for c in all_cal_callbacks), "Missing Year next stepper"
+    assert any("cal_prev_m_" in c for c in all_cal_callbacks), "Missing Month prev stepper"
+    assert any("cal_next_m_" in c for c in all_cal_callbacks), "Missing Month next stepper"
+    assert any("cal_prev_d_" in c for c in all_cal_callbacks), "Missing Day prev stepper"
+    assert any("cal_next_d_" in c for c in all_cal_callbacks), "Missing Day next stepper"
+    assert any("cal_confirm_" in c for c in all_cal_callbacks), "Missing Confirm button"
+
+    date_text = format_date_picker_text("KJM", "MAS", today)
+    assert "KJM" in date_text and "MAS" in date_text and "Selected Date" in date_text
+    print("✅ Interactive Date Picker Steppers & Keyboard: PASSED")
 
     # 3. Test Train Search & Chronological Sorting
 

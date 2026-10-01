@@ -75,7 +75,10 @@ async def run_bot():
         ],
         states={
             bot.STATE_ROUTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_route)],
-            bot.STATE_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_date)],
+            bot.STATE_DATE: [
+                CallbackQueryHandler(bot.handle_date_calendar_callback, pattern=r"^cal_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_date)
+            ],
             bot.STATE_TRAIN_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_train_select)],
             bot.STATE_CLASS_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_class_select)],
             bot.STATE_PAYMENT_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_payment_select)],

@@ -1,6 +1,7 @@
 """Multi-user Telegram Bot with FSM, Per-Chat IRCTC credentials, Live Pricing, and Try Now support."""
 import re
 import datetime
+import calendar
 from typing import Dict, Any
 from telegram import (
     Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
@@ -247,6 +248,105 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     )
     return STATE_ROUTE
 
+def adjust_date(curr: datetime.date, delta_y: int = 0, delta_m: int = 0, delta_d: int = 0) -> datetime.date:
+    """Adjust date safely across months and years with month-length clamping and 120-day limit."""
+    new_y = curr.year + delta_y
+    new_m = curr.month + delta_m
+    while new_m > 12:
+        new_m -= 12
+        new_y += 1
+    while new_m < 1:
+        new_m += 12
+        new_y -= 1
+
+    max_days = calendar.monthrange(new_y, new_m)[1]
+    new_d = min(curr.day, max_days)
+    target = datetime.date(new_y, new_m, new_d)
+
+    if delta_d != 0:
+        target = target + datetime.timedelta(days=delta_d)
+
+    today = datetime.date.today()
+    max_advance = today + datetime.timedelta(days=120)
+
+    if target < today:
+        target = today
+    elif target > max_advance:
+        target = max_advance
+
+    return target
+
+
+def build_date_picker_inline_keyboard(selected_date: datetime.date) -> InlineKeyboardMarkup:
+    """
+    Builds an interactive Date Picker widget with individual steppers for Year, Month, and Day,
+    plus quick stepper buttons and a clear Confirm button.
+    Only allows current date or future dates within 120 days.
+    """
+    today = datetime.date.today()
+    max_advance = today + datetime.timedelta(days=120)
+
+    if selected_date < today:
+        selected_date = today
+    elif selected_date > max_advance:
+        selected_date = max_advance
+
+    y = selected_date.year
+    m = selected_date.month
+    d = selected_date.day
+
+    month_name = calendar.month_abbr[m]
+    date_str = selected_date.strftime("%Y-%m-%d")
+    disp_date = selected_date.strftime("%d-%b-%Y")
+    day_name = selected_date.strftime("%A")
+
+    keyboard = [
+        # Year scroll row: ◀️ Year: 2026 ▶️
+        [
+            InlineKeyboardButton("◀️", callback_data=f"cal_prev_y_{date_str}"),
+            InlineKeyboardButton(f"📅 Year: {y}", callback_data="cal_noop_y"),
+            InlineKeyboardButton("▶️", callback_data=f"cal_next_y_{date_str}"),
+        ],
+        # Month scroll row: ◀️ Month: Oct (10) ▶️
+        [
+            InlineKeyboardButton("◀️", callback_data=f"cal_prev_m_{date_str}"),
+            InlineKeyboardButton(f"🗓️ Month: {month_name} ({m:02d})", callback_data="cal_noop_m"),
+            InlineKeyboardButton("▶️", callback_data=f"cal_next_m_{date_str}"),
+        ],
+        # Day scroll row: ◀️ Day: 05 (Mon) ▶️
+        [
+            InlineKeyboardButton("◀️", callback_data=f"cal_prev_d_{date_str}"),
+            InlineKeyboardButton(f"📆 Day: {d:02d} ({day_name[:3]})", callback_data="cal_noop_d"),
+            InlineKeyboardButton("▶️", callback_data=f"cal_next_d_{date_str}"),
+        ],
+        # Quick jump steppers: -5 Days | Today | +5 Days
+        [
+            InlineKeyboardButton("⏪ -5 Days", callback_data=f"cal_minus5_{date_str}"),
+            InlineKeyboardButton("🔄 Today", callback_data=f"cal_today_{date_str}"),
+            InlineKeyboardButton("+5 Days ⏩", callback_data=f"cal_plus5_{date_str}"),
+        ],
+        # Confirmation button
+        [
+            InlineKeyboardButton(f"✅ CONFIRM: {disp_date} ({day_name[:3]})", callback_data=f"cal_confirm_{date_str}")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def format_date_picker_text(src: str, dst: str, dt: datetime.date) -> str:
+    """Generates the prompt message displaying selected date and relative offset."""
+    today = datetime.date.today()
+    diff = (dt - today).days
+    day_rel = "Today" if diff == 0 else ("Tomorrow" if diff == 1 else f"in {diff} days")
+    return (
+        f"📍 Route: *{src}* ➔ *{dst}*\n"
+        f"📅 Selected Date: *{dt.strftime('%d-%b-%Y (%A)')}* ({day_rel})\n\n"
+        "👉 *Scroll & select your Date | Month | Year below:*\n"
+        "• Tap `◀️` / `▶️` on any row to scroll Day, Month, or Year\n"
+        "• Once selected, tap `[ ✅ CONFIRM ]` to view all trains on that day!"
+    )
+
+
 def get_date_keyboard():
     today = datetime.date.today()
     tomorrow = today + datetime.timedelta(days=1)
@@ -260,6 +360,7 @@ def get_date_keyboard():
         ],
         resize_keyboard=True
     )
+
 
 async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip().upper()
@@ -286,6 +387,7 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     today = datetime.date.today()
     today_disp = today.strftime("%d-%b-%Y (%A)")
 
+    # 1. Quick options keyboard
     await update.message.reply_text(
         f"✅ Route Selected: *{parts[0]}* ➔ *{parts[1]}*\n"
         f"📅 Today's Date: `{today_disp}`\n\n"
@@ -294,7 +396,148 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         reply_markup=get_date_keyboard(),
         parse_mode="Markdown"
     )
+
+    # 2. Interactive Date Picker Widget (Date | Month | Year Steppers)
+    await update.message.reply_text(
+        format_date_picker_text(parts[0], parts[1], today),
+        reply_markup=build_date_picker_inline_keyboard(today),
+        parse_mode="Markdown"
+    )
     return STATE_DATE
+
+
+async def proceed_to_train_search(update: Update, context: ContextTypes.DEFAULT_TYPE, date_obj: datetime.date) -> int:
+    """Executes live train search and displays sorted train list for a validated date."""
+    today = datetime.date.today()
+    max_advance = today + datetime.timedelta(days=120)
+    effective_msg = update.effective_message
+
+    if date_obj < today:
+        await effective_msg.reply_text(
+            f"❌ *Past Date Not Allowed!*\n\n"
+            f"You selected `{date_obj.strftime('%Y-%m-%d')}`, which is in the past.\n"
+            f"Indian Railways reservations permit only *Today ({today.strftime('%Y-%m-%d')})* or a *Future Date*.\n\n"
+            "Please select a valid date from the options below:",
+            reply_markup=get_date_keyboard(),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    if date_obj > max_advance:
+        await effective_msg.reply_text(
+            f"❌ *Date Beyond 120-Day Advance Booking Window!*\n\n"
+            f"Indian Railways advance bookings are open up to 120 days in advance (until `{max_advance.strftime('%Y-%m-%d')}`).\n"
+            "Please choose a date within the booking window:",
+            reply_markup=get_date_keyboard(),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    date_str = date_obj.strftime("%Y-%m-%d")
+    context.user_data["date"] = date_str
+    src = context.user_data.get("source", "KJM")
+    dst = context.user_data.get("dest", "MAS")
+
+    tg_id = update.effective_user.id
+    await storage.save_user_session(tg_id, context.user_data)
+
+    await effective_msg.reply_text(f"🔍 *Fetching live trains for {src} ➔ {dst} on {date_str}...*", parse_mode="Markdown")
+
+    trains = await irctc_svc.search_trains(src, dst, date_str)
+    context.user_data["train_list"] = trains
+    await storage.save_user_session(tg_id, context.user_data)
+
+    if not trains:
+        await effective_msg.reply_text(
+            f"⚠️ No matching trains found running on `{date_str}` for `{src} ➔ {dst}`.\n"
+            "Please choose or enter another journey date:",
+            reply_markup=get_date_keyboard(),
+            parse_mode="Markdown"
+        )
+        return STATE_DATE
+
+    msg = f"🚆 *Available Trains on {date_str} (Earliest First):*\n\n"
+    keyboard = []
+    for t in trains:
+        c_str = ", ".join(t.get("classes", []))
+        msg += f"• `{t['number']}` - *{t['name']}*\n  🕒 Departs: `{t['departure']}` ➔ Arrives: `{t['arrival']}` ({t['duration']})\n  🎫 Classes: `{c_str}`\n\n"
+        keyboard.append([f"{t['number']} - {t['name']} ({t['departure']})"])
+
+    keyboard.append(["⬅️ Back", "❌ Cancel"])
+
+    await effective_msg.reply_text(
+        msg,
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_TRAIN_SELECT
+
+
+async def handle_date_calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    data = query.data or ""
+
+    if data.startswith("cal_noop_"):
+        await query.answer("Tap ◀️ or ▶️ to adjust Year, Month, or Day.")
+        return STATE_DATE
+
+    parts = data.split("_")
+    action = parts[1]
+    curr_date_str = parts[-1]
+
+    try:
+        curr_date = datetime.datetime.strptime(curr_date_str, "%Y-%m-%d").date()
+    except Exception:
+        curr_date = datetime.date.today()
+
+    today = datetime.date.today()
+
+    if action == "confirm":
+        await query.answer("Journey date selected!")
+        return await proceed_to_train_search(update, context, curr_date)
+
+    # Compute updated date based on stepper
+    new_date = curr_date
+    if action == "prev" and len(parts) >= 4:
+        unit = parts[2]
+        if unit == "y":
+            new_date = adjust_date(curr_date, delta_y=-1)
+        elif unit == "m":
+            new_date = adjust_date(curr_date, delta_m=-1)
+        elif unit == "d":
+            new_date = adjust_date(curr_date, delta_d=-1)
+    elif action == "next" and len(parts) >= 4:
+        unit = parts[2]
+        if unit == "y":
+            new_date = adjust_date(curr_date, delta_y=1)
+        elif unit == "m":
+            new_date = adjust_date(curr_date, delta_m=1)
+        elif unit == "d":
+            new_date = adjust_date(curr_date, delta_d=1)
+    elif action == "minus5":
+        new_date = adjust_date(curr_date, delta_d=-5)
+    elif action == "plus5":
+        new_date = adjust_date(curr_date, delta_d=5)
+    elif action == "today":
+        new_date = today
+
+    if new_date == curr_date:
+        if action.startswith("prev") or action == "minus5":
+            await query.answer("⚠️ Cannot select past date. Today is the earliest date allowed.", show_alert=False)
+        elif action.startswith("next") or action == "plus5":
+            await query.answer("⚠️ Advance reservations open up to 120 days only.", show_alert=False)
+        else:
+            await query.answer()
+        return STATE_DATE
+
+    await query.answer()
+    src = context.user_data.get("source", "KJM")
+    dst = context.user_data.get("dest", "MAS")
+    new_text = format_date_picker_text(src, dst, new_date)
+    new_markup = build_date_picker_inline_keyboard(new_date)
+    await query.edit_message_text(new_text, reply_markup=new_markup, parse_mode="Markdown")
+    return STATE_DATE
+
 
 async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     raw_date = update.message.text.strip()
@@ -310,11 +553,12 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return STATE_ROUTE
 
     if "custom date" in raw_date.lower():
+        today = datetime.date.today()
+        src = context.user_data.get("source", "KJM")
+        dst = context.user_data.get("dest", "MAS")
         await update.message.reply_text(
-            "📅 *Enter Custom Journey Date:*\n\n"
-            "Please type your travel date in `YYYY-MM-DD` (e.g. `2026-10-05`) or `DD-MM-YYYY` format:\n"
-            "_(Only today or future dates up to 120 days in advance are permitted)_",
-            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            format_date_picker_text(src, dst, today),
+            reply_markup=build_date_picker_inline_keyboard(today),
             parse_mode="Markdown"
         )
         return STATE_DATE
@@ -342,75 +586,14 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if not date_obj:
         await update.message.reply_text(
             "❌ Invalid date format. Please enter date as `YYYY-MM-DD` (e.g. `2026-10-05`)\n"
-            "or tap one of the quick options below:",
+            "or use the interactive date scroller / quick options below:",
             reply_markup=get_date_keyboard(),
             parse_mode="Markdown"
         )
         return STATE_DATE
 
-    # Strict Future Date Validation
-    today = datetime.date.today()
-    max_advance = today + datetime.timedelta(days=120)
+    return await proceed_to_train_search(update, context, date_obj)
 
-    if date_obj < today:
-        await update.message.reply_text(
-            f"❌ *Past Date Not Allowed!*\n\n"
-            f"You entered `{date_obj.strftime('%Y-%m-%d')}`, which is in the past.\n"
-            f"Indian Railways reservations permit only *Today ({today.strftime('%Y-%m-%d')})* or a *Future Date*.\n\n"
-            "Please select a valid date from the options below:",
-            reply_markup=get_date_keyboard(),
-            parse_mode="Markdown"
-        )
-        return STATE_DATE
-
-    if date_obj > max_advance:
-        await update.message.reply_text(
-            f"❌ *Date Beyond 120-Day Advance Booking Window!*\n\n"
-            f"Indian Railways advance bookings are open up to 120 days in advance (until `{max_advance.strftime('%Y-%m-%d')}`).\n"
-            "Please choose a date within the booking window:",
-            reply_markup=get_date_keyboard(),
-            parse_mode="Markdown"
-        )
-        return STATE_DATE
-
-    date_str = date_obj.strftime("%Y-%m-%d")
-    context.user_data["date"] = date_str
-    src = context.user_data.get("source", "KJM")
-    dst = context.user_data.get("dest", "MAS")
-
-    tg_id = update.effective_user.id
-    await storage.save_user_session(tg_id, context.user_data)
-
-    await update.message.reply_text(f"🔍 *Fetching live trains for {src} ➔ {dst} on {date_str}...*", parse_mode="Markdown")
-
-    trains = await irctc_svc.search_trains(src, dst, date_str)
-    context.user_data["train_list"] = trains
-    await storage.save_user_session(tg_id, context.user_data)
-
-    if not trains:
-        await update.message.reply_text(
-            f"⚠️ No matching trains found running on `{date_str}` for `{src} ➔ {dst}`.\n"
-            "Please choose or enter another journey date:",
-            reply_markup=get_date_keyboard(),
-            parse_mode="Markdown"
-        )
-        return STATE_DATE
-
-    msg = f"🚆 *Available Trains on {date_str} (Earliest First):*\n\n"
-    keyboard = []
-    for t in trains:
-        c_str = ", ".join(t.get("classes", []))
-        msg += f"• `{t['number']}` - *{t['name']}*\n  🕒 Departs: `{t['departure']}` ➔ Arrives: `{t['arrival']}` ({t['duration']})\n  🎫 Classes: `{c_str}`\n\n"
-        keyboard.append([f"{t['number']} - {t['name']} ({t['departure']})"])
-
-    keyboard.append(["⬅️ Back", "❌ Cancel"])
-
-    await update.message.reply_text(
-        msg,
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-        parse_mode="Markdown"
-    )
-    return STATE_TRAIN_SELECT
 
 async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     selected_text = update.message.text.strip()
@@ -421,10 +604,18 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
     if is_back_command(selected_text):
+        today = datetime.date.today()
+        src = context.user_data.get("source", "KJM")
+        dst = context.user_data.get("dest", "MAS")
         await update.message.reply_text(
-            f"Route: *{context.user_data.get('source')}* ➔ *{context.user_data.get('dest')}*\n\n"
+            f"Route: *{src}* ➔ *{dst}*\n\n"
             "📅 *Choose your Journey Date*:",
             reply_markup=get_date_keyboard(),
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(
+            format_date_picker_text(src, dst, today),
+            reply_markup=build_date_picker_inline_keyboard(today),
             parse_mode="Markdown"
         )
         return STATE_DATE
@@ -935,9 +1126,13 @@ async def cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    data = query.data or ""
+
+    if data.startswith("cal_"):
+        return await handle_date_calendar_callback(update, context)
+
     await query.answer()
 
-    data = query.data or ""
     if data.startswith("try_"):
         task_id = data.replace("try_", "")
         if global_scheduler:
