@@ -238,7 +238,20 @@ async def run_tests():
     upi_res = await service.request_upi_payment_and_wait(test_user_id, 240.0, dummy_upi_prompt)
     assert upi_res.get("success") is True
     assert upi_res.get("otp") == "UPI-APPROVE-9988"
-    print(f"✅ UPI Mobile Collect: PASSED (Txn ID: {upi_res.get('transaction_id')})")
+    # 8. Test Seat Sniper Watchdog & Charting Release Trigger
+    print("\n[Test 8] Testing Seat Sniper Watchdog & Charting/Cancellation Release Trigger...")
+    sniper_avail_initial = await service.check_availability("12712", "2026-10-15", "SL", "MAS", "NLR")
+    assert sniper_avail_initial["is_available"] is False, "Seat Sniper must hold fire and not mark WL as available"
+    assert "WL" in sniper_avail_initial["status"] or "PENDING" in sniper_avail_initial["status"].upper(), "Status must reflect WL/Pending"
+    print(f"   • Initial Watchdog State: {sniper_avail_initial['status']} (is_available={sniper_avail_initial['is_available']})")
+
+    # Simulate charting unfreezing / passenger cancellation
+    service.simulate_cancellation_open_seats("12712", "2026-10-15", "SL", count=2)
+    sniper_avail_released = await service.check_availability("12712", "2026-10-15", "SL", "MAS", "NLR")
+    assert sniper_avail_released["is_available"] is True, "Seat Sniper must detect opened seats upon release"
+    assert sniper_avail_released["seats"] == 2
+    print(f"   • Released Watchdog State: {sniper_avail_released['status']} (is_available={sniper_avail_released['is_available']})")
+    print("✅ Seat Sniper Watchdog & Release Trigger: PASSED")
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")

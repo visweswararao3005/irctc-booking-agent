@@ -81,34 +81,38 @@ class BackgroundBookingWorker:
         # Sniper Mode Check: ONLY book if seat is Confirmed / Current Available, NEVER Waiting List
         is_sniper = task.get("booking_mode") == "SNIPER"
         status_upper = avail.get("status", "").upper()
-        is_wl = any(x in status_upper for x in ["WL", "WAITING", "RAC", "REGRET"])
+        is_wl = any(x in status_upper for x in ["WL", "WAITING", "RAC", "REGRET", "PENDING"])
         can_book = avail["is_available"] and (not is_sniper or not is_wl)
 
         if can_book:
             # SEAT AVAILABLE & CONFIRMED! Initiate Booking Workflow
             status_text = (
-                f"🎉 *CONFIRMED SEATS ARE NOW AVAILABLE!*\n\n"
+                f"⚡⚡🎯 *TARGET ACQUIRED! CONFIRMED SEATS RELEASED!* 🎯⚡⚡\n\n"
                 f"{tag} at `{now_str}`\n"
                 f"• *Train:* {train_no} ({coach_class})\n"
-                f"• *Status:* {avail['status']}\n\n"
-                f"⚡ *Sniper Triggered! Proceeding to automated IRCTC booking & payment...*"
+                f"• *Status:* {avail['status']}\n"
+                f"• *Seats Open:* {avail.get('seats', 1)} Berths\n\n"
+                f"⚡ *Sniper Triggered! Firing instant booking strike...*"
             )
             await self._send_or_edit_status(chat_id, task_id, status_text, keyboard=None)
             await self._execute_booking_flow(task, avail)
             return {"status": "BOOKED", "details": avail}
         else:
             # Still in Waiting List / Charting Pending -> Send update to user
-            mode_desc = "🎯 [SEAT SNIPER ACTIVE]" if is_sniper else tag
+            mode_desc = "🎯 [SEAT SNIPER WATCHDOG ACTIVE]" if is_sniper else tag
+            quota_line = f"• *Class Quota:* `{avail.get('quota')} Berths`\n" if avail.get("quota") else ""
             status_text = (
                 f"{mode_desc} at `{now_str}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"• *Train:* `{train_no}` | *Class:* `{coach_class}`\n"
+                f"• *Train:* `{train_no}` - {task.get('train_name', 'EXP')} | *Class:* `{coach_class}`\n"
                 f"• *Route:* {source} ➔ {dest} ({date})\n"
+                f"{quota_line}"
                 f"• *Current Status:* `{avail['status']}`\n"
                 f"• *Target:* Confirmed / Current Available (CURR_AVBL)\n"
                 f"• *Chart Prep Window:* ~4 hours before train departure\n"
                 f"• *Total Checks:* `{attempts}` (Next check in {POLL_INTERVAL_SECONDS}s)\n\n"
-                f"🛡️ _Sniper is holding fire. It will NEVER book WL and will strike the second a confirmed berth opens!_"
+                f"🛡️ _Sniper is holding fire. It will NEVER book Waiting List._\n"
+                f"When unutilized berths hit the system at chart preparation or upon cancellation, the sniper will strike instantly!"
             )
             keyboard = self.get_monitoring_keyboard(task_id)
             await self._send_or_edit_status(chat_id, task_id, status_text, keyboard=keyboard)
@@ -210,10 +214,10 @@ class BackgroundBookingWorker:
             )
             return
 
-        # Payment succeeded! Generate PNR and PDF ticket
-        pnr = str(random.randint(4000000000, 4999999999))
+        # Strike successful! Create verified reference ID (no fake CRIS PNRs)
+        ref_id = f"STRIKE-{task['train_number']}-{datetime.datetime.now().strftime('%H%M%S')}"
         booking_data = {
-            "pnr": pnr,
+            "pnr": ref_id,
             "train_number": task["train_number"],
             "train_name": task.get("train_name", "SUPERFAST EXP"),
             "source": task["source_stn"],
@@ -227,23 +231,23 @@ class BackgroundBookingWorker:
 
         pdf_path = generate_ticket_pdf(booking_data)
 
-        # Notify user with full confirmation
+        # Notify user with full strike confirmation
         p_info = task.get("passengers", [{}])[0]
         success_msg = (
-            f"🎉 *CONGRATULATIONS! TICKET BOOKED CONFIRMED!*\n\n"
-            f"• *PNR Number:* `{pnr}`\n"
-            f"• *Train:* {task['train_number']} ({task['coach_class']})\n"
+            f"⚡⚡🎯 *TARGET ACQUIRED! CONFIRMED SEATS RELEASED!* 🎯⚡⚡\n\n"
+            f"• *Ref ID:* `{ref_id}`\n"
+            f"• *Train:* {task['train_number']} ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
             f"• *Route:* {task['source_stn']} ➔ {task['dest_stn']}\n"
             f"• *Journey Date:* {task['journey_date']}\n"
             f"• *Passenger:* {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
-            f"• *Berth Allocated:* S4, 34 (Lower Berth)\n"
+            f"• *Berth Preference:* {p_info.get('berth', 'No Preference')}\n"
             f"• *Payment Verified:* {verif_str}\n\n"
-            "⚠️ *IMPORTANT TRAVEL & LEGAL ADVISORY:*\n"
-            "_The PDF attached below is an Agent Booking Receipt and is NOT an authorized ticket for train boarding._\n"
-            "Indian Railways rules mandate carrying the official government Electronic Reservation Slip (ERS).\n\n"
-            "🔗 *Download Official Govt ERS Ticket:* [irctc.co.in](https://www.irctc.co.in/nget/train-search)\n"
-            "🔍 *Verify Official PNR Status:* [indianrail.gov.in](https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html)\n\n"
-            f"📄 *Booking Confirmation Receipt (PDF) attached below:* 👇"
+            "🚨 *CHART PREPARATION / CANCELLATION WINDOW ACTIVE!*\n"
+            "Unutilized quota berths are now open on the reservation network for immediate booking.\n\n"
+            "🔗 *Complete 1-Click Booking on Official IRCTC:* [irctc.co.in](https://www.irctc.co.in/nget/train-search)\n"
+            "🔍 *Check Live Status on IndianRail:* [indianrail.gov.in](https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html)\n\n"
+            "ℹ️ *Official PNR Policy Notice:* To protect you against fraud, the official 10-digit government PNR is issued directly by CRIS upon completion of payment on irctc.co.in. The bot never generates fake PNRs.\n\n"
+            f"📄 *Agent Sniper Strike Receipt (PDF) attached below:* 👇"
         )
         await self.bot_app.bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="Markdown")
 
@@ -252,8 +256,8 @@ class BackgroundBookingWorker:
             await self.bot_app.bot.send_document(
                 chat_id=chat_id,
                 document=doc,
-                filename=f"Booking_Receipt_{pnr}.pdf",
-                caption=f"⚠️ Agent Booking Receipt (PNR: {pnr}). Not authorized for boarding. Download official ERS from irctc.co.in."
+                filename=f"Sniper_Strike_{ref_id}.pdf",
+                caption=f"⚠️ Agent Sniper Strike Receipt ({ref_id}). Official government PNR is issued directly by CRIS on irctc.co.in."
             )
 
         # Auto-cleanup: remove task from JSON file so no unnecessary data remains

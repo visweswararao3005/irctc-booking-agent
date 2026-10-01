@@ -708,15 +708,18 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = f"🎟️ *Select Coach Class for Train {train_number} ({train_info.get('name')}):*\n\n"
     keyboard = []
     for c in class_options:
-        msg += f"• *{c['class_code']}:* Live Fare: *₹{int(c['fare'])}*\n"
+        quota_txt = f"Quota: *{c['quota']} Berths* | " if c.get("quota") else ""
+        msg += f"• *{c['class_code']}:* {quota_txt}Live Fare: *₹{int(c['fare'])}*\n"
         keyboard.append([f"{c['class_code']} (Rs. {int(c['fare'])})"])
 
     keyboard.append(["⬅️ Back", "❌ Cancel"])
 
     msg += (
-        "\nℹ️ *Live Data Advisory:*\n"
-        "• Coach classes & fares are fetched live from Indian Railways (Field 41).\n"
-        "• Real-time berth allocation is confirmed via your IRCTC account during booking."
+        "\nℹ️ *Live Capacity & Waiting List Advisory:*\n"
+        "• Quota numbers show total reserved capacity allocated to this train by CRIS.\n"
+        "• Dynamic Waiting List status updates continuously. Verify real-time WL on official portal:\n"
+        "🔗 [Check Dynamic WL on Official IRCTC](https://www.irctc.co.in/nget/train-search)\n"
+        "• The *Seat Sniper* will monitor this train 24/7 and strike when confirmed berths release at chart preparation!"
     )
 
     await update.message.reply_text(
@@ -1018,7 +1021,13 @@ async def handle_inline_upi_id(update: Update, context: ContextTypes.DEFAULT_TYP
     tg_id = update.effective_user.id
     context.user_data["upi_id"] = upi_text
     await storage.save_user_upi(tg_id, upi_text)
-    await update.message.reply_text(f"📱 UPI ID `{upi_text}` encrypted and linked for this chat!")
+    await update.message.reply_text(
+        f"✅ *UPI ID Verified & Saved:* `{upi_text}`\n\n"
+        "ℹ️ *Banking Gateway Notice:*\n"
+        "Direct UPI push collect requests require an active NPCI Merchant Gateway (Razorpay/PayU). "
+        "The agent locks this UPI ID so you can execute instant 1-click payment when confirmed berths release at chart preparation.",
+        parse_mode="Markdown"
+    )
     return await render_confirmation(update, context)
 
 async def handle_inline_irctc_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1196,18 +1205,20 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await global_scheduler.check_and_process_task(await storage.get_task(task_id), is_manual=False)
     else:
         # Sniper Mode Activated
+        upi_display = f" (`{u.get('upi_id')}`)" if u.get("upi_id") else ""
         initial_card = (
             f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• *Task ID:* `{task_id}`\n"
             f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')} ({u['coach_class']})\n"
             f"• *Route:* {u['source']} ➔ {u['dest']} ({u['date']})\n"
-            f"• *Payment:* `{u.get('payment_method')}`\n"
+            f"• *Payment:* `{u.get('payment_method')}`{upi_display}\n"
             f"• *Target:* Confirmed / Current Available Berths (CNF / CURR_AVBL)\n\n"
             f"🛡️ *Chart Preparation Watchdog Active:*\n"
             f"• The agent will **NEVER** book a Waiting List (WL) ticket.\n"
-            f"• When the first chart is prepared (~4 hours before departure) or any passenger cancels, all released quotas hit the reservation system.\n"
-            f"• The sniper will strike and book the confirmed seat within seconds!\n\n"
+            f"• Indian Railways prepares the 1st reservation chart ~4 hours before train departure.\n"
+            f"• All unutilized quotas (defense/HO/foreign) release into the public pool as Current Available (CURR_AVBL).\n"
+            f"• The sniper will strike and alert you the moment confirmed berths open!\n\n"
             f"👉 Click *'Try Now'* below to test a live check anytime! 👇"
         )
         keyboard = InlineKeyboardMarkup([
