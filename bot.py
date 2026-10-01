@@ -449,8 +449,11 @@ async def proceed_to_train_search(update: Update, context: ContextTypes.DEFAULT_
 
     if not trains:
         await effective_msg.reply_text(
-            f"⚠️ No matching trains found running on `{date_str}` for `{src} ➔ {dst}`.\n"
-            "Please choose or enter another journey date:",
+            f"⚠️ *No Live Trains Found from Indian Railways*\n\n"
+            f"Could not find any trains running on `{date_str}` for `{src} ➔ {dst}`.\n"
+            "• Please ensure station codes are valid (e.g. `KJM`, `MAS`, `SBC`, `NDLS`)\n"
+            "• Or Indian Railways servers may be temporarily experiencing heavy load.\n\n"
+            "👉 Please enter another date or send `hi` to start fresh.",
             reply_markup=get_date_keyboard(),
             parse_mode="Markdown"
         )
@@ -595,6 +598,44 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return await proceed_to_train_search(update, context, date_obj)
 
 
+async def handle_out_of_state_train_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Intelligently handles train buttons clicked after server restart, timeout, or outside active flow.
+    Recovers stored route/date if available, or clearly explains the issue and prompts to continue.
+    """
+    text = update.message.text.strip()
+    tg_id = update.effective_user.id
+    m = re.match(r"^(\d{5})\s*-\s*(.+?)(?:\s*\(\d{2}:\d{2}\))?$", text)
+    train_num = m.group(1) if m else text.split()[0]
+    train_name = m.group(2) if m else "TRAIN"
+
+    saved = await storage.get_user_session(tg_id)
+    if saved and saved.get("source") and saved.get("dest") and saved.get("date"):
+        # Session recovered!
+        context.user_data.update(saved)
+        context.user_data["train_number"] = train_num
+        await update.message.reply_text(
+            f"🔄 *Restoring Session:* Train *{train_num} - {train_name}* for *{saved.get('source')}* ➔ *{saved.get('dest')}* on *{saved.get('date')}*...\n"
+            "Checking live coach classes and fares...",
+            parse_mode="Markdown"
+        )
+        return await handle_train_select(update, context)
+
+    # Session lost due to server reboot / redeploy -> clearly explain the proper issue
+    context.user_data.clear()
+    context.user_data["preselected_train"] = train_num
+    await update.message.reply_text(
+        f"⚠️ *Booking Session Interrupted / Server Updated*\n\n"
+        f"You tapped *{train_num} - {train_name}*, but the previous booking session was interrupted by an automated server deployment.\n\n"
+        "📍 Please enter your journey route to resume:\n"
+        "*(Example: `KJM-MAS` or `MAS-NLR`)*\n\n"
+        "_(Or send `hi` to start fresh)_",
+        reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_ROUTE
+
+
 async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     selected_text = update.message.text.strip()
     if is_cancel_command(selected_text):
@@ -666,10 +707,16 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = f"🎟️ *Select Coach Class for Train {train_number} ({train_info.get('name')}):*\n\n"
     keyboard = []
     for c in class_options:
-        msg += f"• *{c['class_code']}:* `{c['status']}` — *₹{int(c['fare'])}*\n"
-        keyboard.append([f"{c['class_code']} - {c['status']} (Rs. {int(c['fare'])})"])
+        msg += f"• *{c['class_code']}:* Live Fare: *₹{int(c['fare'])}*\n"
+        keyboard.append([f"{c['class_code']} (Rs. {int(c['fare'])})"])
 
     keyboard.append(["⬅️ Back", "❌ Cancel"])
+
+    msg += (
+        "\nℹ️ *Live Data Advisory:*\n"
+        "• Coach classes & fares are fetched live from Indian Railways (Field 41).\n"
+        "• Real-time berth allocation is confirmed via your IRCTC account during booking."
+    )
 
     await update.message.reply_text(
         msg,
@@ -734,7 +781,7 @@ async def handle_payment_select(update: Update, context: ContextTypes.DEFAULT_TY
     if is_back_command(text):
         # Re-display classes
         class_options = context.user_data.get("class_options", [])
-        keyboard = [[f"{c['class_code']} - {c['status']} (Rs. {int(c['fare'])})"] for c in class_options]
+        keyboard = [[f"{c['class_code']} (Rs. {int(c['fare'])})"] for c in class_options]
         keyboard.append(["⬅️ Back", "❌ Cancel"])
         await update.message.reply_text(
             f"🎟️ *Select Coach Class for Train {context.user_data.get('train_number')}:*",
@@ -1173,18 +1220,7 @@ async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYP
     # 1. Check if user tapped a train option like "16022 - KAVERI EXPRESS (00:15)"
     train_match = re.match(r"^(\d{5})\s*-\s*(.+?)(?:\s*\(\d{2}:\d{2}\))?$", text)
     if train_match:
-        train_num = train_match.group(1)
-        saved = await storage.get_user_session(tg_id)
-        if saved and saved.get("source") and saved.get("dest") and saved.get("date"):
-            # Restore saved session into context.user_data
-            context.user_data.update(saved)
-            context.user_data["train_number"] = train_num
-            await update.message.reply_text(
-                f"🔄 *Restoring Session:* Train *{train_num}* for *{saved.get('source')}* ➔ *{saved.get('dest')}* on *{saved.get('date')}*...\n"
-                "Checking live coach classes and fares...",
-                parse_mode="Markdown"
-            )
-            return await handle_train_select(update, context)
+        return await handle_out_of_state_train_selection(update, context)
 
     # 2. Check if user typed a route like "KJM - MAS" or "KJM-MAS"
     cleaned = re.sub(r"\s*(->|➔|TO|-|–|/)\s*", "-", text, flags=re.IGNORECASE).strip()

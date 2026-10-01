@@ -65,13 +65,17 @@ async def run_bot():
     scheduler = BackgroundBookingWorker(app, bot.irctc_svc)
     bot.global_scheduler = scheduler
 
+    ROUTE_PATTERN = re.compile(r"^[A-Za-z]{2,6}\s*(?:->|➔|TO|-|–|/|\s)\s*[A-Za-z]{2,6}$", re.IGNORECASE)
+    TRAIN_PATTERN = re.compile(r"^\d{5}\s*-", re.IGNORECASE)
+
     # 1. Booking Conversation Handler
     booking_conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.start_booking),
-            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking)
-
+            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
+            MessageHandler(filters.Regex(ROUTE_PATTERN), bot.handle_route),
+            MessageHandler(filters.Regex(TRAIN_PATTERN), bot.handle_out_of_state_train_selection),
         ],
         states={
             bot.STATE_ROUTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_route)],
