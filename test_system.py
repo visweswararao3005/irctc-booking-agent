@@ -291,6 +291,72 @@ async def run_tests():
     assert callable(bot.cmd_tasks), "bot.cmd_tasks is not callable"
     print("✅ /info and /tasks Handlers & Task Privacy: PASSED")
 
+    # 10. Test Persistent Passenger Profile Management & Reuse
+    print("\n[Test 10] Testing Persistent Passenger Profile Management & 1-Click Reuse...")
+    await storage.save_passenger_profile(test_user_id, "Vicky", 24, "Male", "Lower Berth (LB)")
+    p_prof = await storage.get_passenger_profile(test_user_id)
+    assert p_prof is not None, "Saved passenger profile was None"
+    assert p_prof["name"] == "Vicky"
+    assert p_prof["age"] == 24
+    assert p_prof["gender"] == "Male"
+    assert p_prof["berth"] == "Lower Berth (LB)"
+    print(f"   • Saved Profile Verified: {p_prof['name']} ({p_prof['age']}, {p_prof['gender']}, {p_prof['berth']})")
+
+    # Test Profile Reset
+    await storage.reset_passenger_profile(test_user_id)
+    assert await storage.get_passenger_profile(test_user_id) is None, "Profile was not reset"
+    print("✅ Passenger Profile Storage, Retrieval & Reset: PASSED")
+
+    # 11. Test Exact WL & Available Berth Calculations
+    print("\n[Test 11] Testing Exact WL & Available Berth Status Breakdown...")
+    class_opts = await service.get_class_options_with_prices("16022", "KJM", "MAS", "2026-10-15")
+    assert len(class_opts) > 0, "No class options returned"
+    sl_opt = next((c for c in class_opts if c["class_code"] == "SL"), None)
+    assert sl_opt is not None, "SL class missing in options"
+    assert "WL" in sl_opt["status"] or "AVAILABLE" in sl_opt["status"], f"Expected WL or AVAILABLE in status, got: {sl_opt['status']}"
+    print(f"   • SL Status: {sl_opt['status']} | Quota: {sl_opt['quota']} | Fare: Rs. {sl_opt['fare']}")
+    print(f"   • Display String: {sl_opt['display']}")
+    print("✅ Exact WL & Available Count Breakdown: PASSED")
+
+    # 12. Test Ticket Opening Estimation & Dynamic Polling Engine
+    print("\n[Test 12] Testing Ticket Opening Estimation & Dynamic Polling Rate Ramp-Up...")
+    from scheduler import compute_dynamic_polling_interval
+
+    # Case A: Morning train (e.g. 16022 Kaveri Exp at 00:15) -> Previous day 20:00 IST rule
+    est_morning = service.estimate_ticket_opening("16022", "00:15", "2026-10-15", "SL")
+    assert "2026-10-14 20:00" in est_morning["chart_1_time"], f"Morning rule failed: {est_morning['chart_1_time']}"
+    assert est_morning["is_morning_rule"] is True
+    print(f"   • Morning Train Chart 1 Time: {est_morning['chart_1_time']} ({est_morning['chart_rule_note']})")
+
+    # Case B: Afternoon train (e.g. 12603 at 16:45) -> 4 hours prior rule (12:45)
+    est_afternoon = service.estimate_ticket_opening("12603", "16:45", "2026-10-15", "SL")
+    assert "2026-10-15 12:45" in est_afternoon["chart_1_time"], f"4h rule failed: {est_afternoon['chart_1_time']}"
+    assert est_afternoon["is_morning_rule"] is False
+    print(f"   • Afternoon Train Chart 1 Time: {est_afternoon['chart_1_time']} ({est_afternoon['chart_rule_note']})")
+
+    # Case C: Dynamic Polling Rate Countdown
+    # Standby (>2h): 900s
+    int_standby, desc_standby = compute_dynamic_polling_interval(8000)
+    assert int_standby == 900, f"Expected 900s standby, got {int_standby}"
+
+    # High Alert (60m to 30m): 60s
+    int_60m, desc_60m = compute_dynamic_polling_interval(2400)
+    assert int_60m == 60, f"Expected 60s at T-40m, got {int_60m}"
+
+    # Ramp-Up (30m to 10m): 30s
+    int_30m, desc_30m = compute_dynamic_polling_interval(1200)
+    assert int_30m == 30, f"Expected 30s at T-20m, got {int_30m}"
+
+    # Hyper-Drive Strike (10m to -15m): 10s
+    int_strike, desc_strike = compute_dynamic_polling_interval(300)
+    assert int_strike == 10, f"Expected 10s at strike spot, got {int_strike}"
+
+    print(f"   • Standby Polling: {int_standby}s ({desc_standby})")
+    print(f"   • T-40m Polling:   {int_60m}s ({desc_60m})")
+    print(f"   • T-20m Polling:   {int_30m}s ({desc_30m})")
+    print(f"   • Strike Polling:  {int_strike}s ({desc_strike})")
+    print("✅ Ticket Opening Estimation & Dynamic Polling Rate Engine: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

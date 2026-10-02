@@ -27,6 +27,7 @@ global_scheduler = None  # Injected in main.py
     STATE_TRAIN_SELECT,
     STATE_CLASS_SELECT,
     STATE_PAYMENT_SELECT,
+    STATE_PASSENGER_CHOICE,
     STATE_PASSENGER_NAME,
     STATE_PASSENGER_AGE,
     STATE_PASSENGER_GENDER,
@@ -39,13 +40,13 @@ global_scheduler = None  # Injected in main.py
     STATE_CARD_CVV,
     STATE_CARD_NAME,
     STATE_CONFIRM
-) = range(17)
+) = range(18)
 
 # Conversation States for Account Setup/Change
-STATE_SET_USER, STATE_SET_PASS = range(17, 19)
+STATE_SET_USER, STATE_SET_PASS = range(18, 20)
 
 # Conversation States for Standalone Card Setup/Change
-STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(19, 23)
+STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(20, 24)
 
 
 # ----------------- Account Management Handlers -----------------
@@ -310,6 +311,10 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p_info = task.get("passengers", [{}])[0]
         p_name = p_info.get("name", "Passenger")
 
+        phase_line = f"• *Monitoring Phase:* {task.get('phase_desc')}\n" if task.get("phase_desc") else ""
+        poll_line = f"• *Dynamic Polling Rate:* Every {task.get('polling_interval', 60)}s (Auto-accelerates at opening)\n" if task.get("polling_interval") else ""
+        chart_line = f"• *Estimated Chart Prep:* `{task.get('target_strike_time')} IST`\n" if task.get("target_strike_time") else ""
+
         task_card = (
             f"🎯 *Task ID:* `{task_id}`\n"
             f"• *Train:* `{t_num}` - {t_name} (*{c_class}*)\n"
@@ -317,6 +322,9 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• *Passenger:* {p_name} ({p_info.get('berth', 'No Pref')})\n"
             f"• *Current Status:* `{latest_stat}`\n"
             f"• *Target:* Confirmed / Current Available (`CURR_AVBL`)\n"
+            f"{chart_line}"
+            f"{phase_line}"
+            f"{poll_line}"
             f"• *Payment Mode:* {pay_mode}\n"
             f"• *Checks Performed:* `{attempts}` (Last: `{last_chk}`)\n\n"
             "👉 Tap below to trigger a live check or cancel monitoring:"
@@ -832,8 +840,9 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = f"🎟️ *Select Coach Class for Train {train_number} ({train_info.get('name')}):*\n\n"
     keyboard = []
     for c in class_options:
+        curr_stat = c.get("status", "WL")
         quota_txt = f"Quota: *{c['quota']} Berths* | " if c.get("quota") else ""
-        msg += f"• *{c['class_code']}:* {quota_txt}Live Fare: *₹{int(c['fare'])}*\n"
+        msg += f"• *{c['class_code']}:* `{curr_stat}` | {quota_txt}Live Fare: *₹{int(c['fare'])}*\n"
         keyboard.append([f"{c['class_code']} (Rs. {int(c['fare'])})"])
 
     keyboard.append(["⬅️ Back", "❌ Cancel"])
@@ -951,9 +960,71 @@ async def handle_payment_select(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return STATE_PAYMENT_SELECT
 
+    tg_id = update.effective_user.id
+    saved = await storage.get_passenger_profile(tg_id)
+    if saved and saved.get("name"):
+        context.user_data["saved_profile"] = saved
+        choice_kb = [
+            [f"✅ Use Saved: {saved['name']} ({saved['age']}, {saved['gender']})"],
+            ["➕ Enter New Passenger Details"],
+            ["⬅️ Back", "❌ Cancel"]
+        ]
+        await update.message.reply_text(
+            f"{info_banner}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "👤 *Saved Passenger Profile Found:*\n\n"
+            f"• *Name:* {saved['name']}\n"
+            f"• *Age:* {saved['age']} yrs | *Gender:* {saved['gender']}\n"
+            f"• *Berth Preference:* {saved.get('berth', 'No Preference')}\n\n"
+            "👉 Tap below to use this saved passenger in 1-click or enter new details:",
+            reply_markup=ReplyKeyboardMarkup(choice_kb, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PASSENGER_CHOICE
+
     await update.message.reply_text(
         f"{info_banner}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👤 Please enter the *Passenger Full Name*:",
+        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_PASSENGER_NAME
+
+async def handle_passenger_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    if is_back_command(text):
+        payment_keyboard = [
+            ["💼 IRCTC eWallet", "💳 Credit / Debit Card"],
+            ["📱 UPI / Instant Pay"],
+            ["⬅️ Back", "❌ Cancel"]
+        ]
+        await update.message.reply_text(
+            "💳 *Choose Payment Mode:*\n\nPlease choose a payment option:",
+            reply_markup=ReplyKeyboardMarkup(payment_keyboard, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PAYMENT_SELECT
+
+    if "Use Saved" in text or "✅" in text:
+        saved = context.user_data.get("saved_profile") or await storage.get_passenger_profile(update.effective_user.id)
+        if saved:
+            context.user_data["p_name"] = saved["name"]
+            context.user_data["p_age"] = saved["age"]
+            context.user_data["p_gender"] = saved["gender"]
+            context.user_data["p_berth"] = saved.get("berth", "No Preference")
+            await update.message.reply_text(
+                f"✅ Selected Saved Passenger: *{saved['name']}* ({saved['age']} yrs, {saved['gender']}, {saved.get('berth', 'No Preference')})",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown"
+            )
+            return await check_credentials_and_next(update, context)
+
+    # User chose "➕ Enter New Passenger Details"
+    await update.message.reply_text(
         "👤 Please enter the *Passenger Full Name*:",
         reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
         parse_mode="Markdown"
@@ -1069,23 +1140,36 @@ async def handle_passenger_berth(update: Update, context: ContextTypes.DEFAULT_T
         return STATE_PASSENGER_GENDER
 
     context.user_data["p_berth"] = text
+    tg_id = update.effective_user.id
 
-    # Verify if this user has IRCTC credentials configured
+    # Auto-save passenger profile for future 1-click bookings!
+    await storage.save_passenger_profile(
+        tg_id,
+        context.user_data.get("p_name", "Passenger"),
+        context.user_data.get("p_age", 25),
+        context.user_data.get("p_gender", "M"),
+        context.user_data.get("p_berth", "No Preference")
+    )
+
+    return await check_credentials_and_next(update, context)
+
+async def check_credentials_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = update.effective_user.id
     username, password = await storage.get_decrypted_credentials(tg_id)
 
     if not username:
-        # Ask for credentials now
         await update.message.reply_text(
             "⚠️ *IRCTC Account Required*\n\n"
             "You haven't linked your IRCTC ID to this Telegram chat yet.\n"
-            "Please enter your *IRCTC Username* now:",
+            "Please enter your *IRCTC Username* now:\n"
+            "_(Encrypted with AES-256 for future 1-click bookings)_",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )
         return STATE_IRCTC_USER
 
-    # Check payment card
+    # User already has IRCTC account saved!
+    context.user_data["irctc_user"] = username
     return await check_card_or_confirm(update, context)
 
 async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1227,6 +1311,8 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         upi_val = u.get("upi_id") or await storage.get_decrypted_upi(tg_id) or "Linked UPI"
         payment_line = f"• *Payment Mode:* `UPI / Instant Pay` (`{upi_val}`)"
 
+    open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
+
     summary = (
         "📋 *JOURNEY BOOKING SUMMARY:*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1238,11 +1324,13 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Passenger:* {u['p_name']}, Age {u['p_age']} ({u['p_gender']})\n"
         f"• *Berth:* {u['p_berth']}\n"
         f"{payment_line}\n"
+        f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
+        f"  _({open_est['chart_rule_note']})_\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🎯 *CHOOSE EXECUTION MODE:*\n\n"
         "1️⃣ *🎯 SEAT AVAILABILITY SNIPER* (Recommended)\n"
         "   _Never books Waiting List! Continually monitors the train 24/7._\n"
-        "   _When first charting occurs (~4 hours before departure) and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly!_\n\n"
+        "   _When charting occurs and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly!_\n\n"
         "2️⃣ *⚡ BOOK NOW*\n"
         "   _Attempts immediate live booking right away._\n\n"
         "👉 Tap an option below:"
@@ -1309,6 +1397,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "train_number": u["train_number"],
         "train_name": u.get("train_name", "EXP"),
         "coach_class": u["coach_class"],
+        "departure_time": u.get("departure", "00:15"),
         "payment_method": u.get("payment_method", "Credit / Debit Card"),
         "upi_id": u.get("upi_id") or await storage.get_decrypted_upi(tg_id),
         "booking_mode": booking_mode,
@@ -1336,6 +1425,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown"
         )
 
+        open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
         upi_display = f" (`{u.get('upi_id')}`)" if u.get("upi_id") else ""
         initial_card = (
             f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
@@ -1343,13 +1433,15 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"• *Task ID:* `{task_id}`\n"
             f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')} ({u['coach_class']})\n"
             f"• *Route:* {u['source']} ➔ {u['dest']} ({u['date']})\n"
+            f"• *Current Status:* `{avail['status']}`\n"
             f"• *Payment:* `{u.get('payment_method')}`{upi_display}\n"
-            f"• *Target:* Confirmed / Current Available Berths (CNF / CURR_AVBL)\n\n"
-            f"🛡️ *Chart Preparation Watchdog Active:*\n"
+            f"• *Target:* Confirmed / Current Available Berths (CNF / CURR_AVBL)\n"
+            f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
+            f"  _({open_est['chart_rule_note']})_\n\n"
+            f"🛡️ *Dynamic Charting Watchdog Active:*\n"
             f"• The agent will **NEVER** book a Waiting List (WL) ticket.\n"
-            f"• Indian Railways prepares the 1st reservation chart ~4 hours before train departure.\n"
-            f"• All unutilized quotas (defense/HO/foreign) release into the public pool as Current Available (CURR_AVBL).\n"
-            f"• The sniper will strike and alert you the moment confirmed berths open!\n\n"
+            f"• Polling schedule automatically accelerates: Standby ➔ **60s** at T-60m ➔ **30s** at T-30m ➔ **10s** at T-10m.\n"
+            f"• The sniper will strike and alert you the exact moment confirmed berths open!\n\n"
             f"👉 Click *'Try Now'* below to test a live check anytime! 👇"
         )
         keyboard = InlineKeyboardMarkup([

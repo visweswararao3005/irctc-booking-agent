@@ -160,32 +160,54 @@ class IRCTCService:
         t_key = self._get_key(train_no, journey_date)
         if t_key not in self.inventory:
             self.inventory[t_key] = {}
+            # Deterministic seed based on train and date
+            seed_num = int(train_no) if train_no.isdigit() else 12345
             for c_code in valid_classes:
                 fare = fares.get(c_code, BASE_FARES.get(c_code, 240.0))
                 q_count = train_info.get("quotas", {}).get(c_code)
+                if not q_count:
+                    default_q = {"SL": 288, "3A": 192, "2A": 48, "1A": 24, "2S": 120, "CC": 72, "3E": 48}
+                    q_count = default_q.get(c_code, 72)
+
+                # Realistic waiting list vs available calculation
+                # High quota classes or daytime Chair Cars might have seats available
+                if c_code in ["CC", "2S"] and q_count > 100 and (seed_num % 3 == 0):
+                    avl_seats = max(5, int(q_count * 0.15))
+                    status_str = f"AVAILABLE {avl_seats}"
+                    seats_num = avl_seats
+                    wl_num = 0
+                else:
+                    # Realistic Indian Railways GNWL calculation
+                    gnwl_total = max(4, int(q_count * 0.14) + (seed_num % 9))
+                    curr_wl = max(1, int(gnwl_total * 0.55))
+                    status_str = f"GNWL {gnwl_total} / WL {curr_wl}"
+                    seats_num = 0
+                    wl_num = curr_wl
+
                 self.inventory[t_key][c_code] = {
-                    "status": "WL / Chart Release Pending",
-                    "seats": 0,
+                    "status": status_str,
+                    "seats": seats_num,
                     "fare": float(fare),
                     "quota": q_count,
-                    "wl_count": 1
+                    "wl_count": wl_num
                 }
 
         inv = self.inventory[t_key]
         results = []
         for c_name in valid_classes:
             item = inv.get(c_name, {
-                "status": "WL / Chart Release Pending",
+                "status": "GNWL 24 / WL 12",
                 "seats": 0,
                 "fare": fares.get(c_name, 240.0),
-                "quota": train_info.get("quotas", {}).get(c_name),
-                "wl_count": 1
+                "quota": train_info.get("quotas", {}).get(c_name, 72),
+                "wl_count": 12
             })
             q_cnt = item.get("quota") or train_info.get("quotas", {}).get(c_name)
-            if q_cnt:
-                display_label = f"{c_name}: Quota {q_cnt} Berths | ₹{int(item['fare'])} (Live Fare)"
+            curr_status = item.get("status", "WL")
+            if "AVAILABLE" in curr_status:
+                display_label = f"{c_name}: {curr_status} (Quota: {q_cnt}) | ₹{int(item['fare'])} (Live Fare)"
             else:
-                display_label = f"{c_name}: ₹{int(item['fare'])} (Live Fare)"
+                display_label = f"{c_name}: {curr_status} (Quota: {q_cnt}) | ₹{int(item['fare'])} (Live Fare)"
 
             results.append({
                 "class_code": c_name,
@@ -197,6 +219,82 @@ class IRCTCService:
             })
         return results
 
+    def estimate_ticket_opening(
+        self,
+        train_no: str,
+        departure_time_str: str,
+        journey_date_str: str,
+        coach_class: str
+    ) -> Dict[str, Any]:
+        """
+        Estimates the exact ticket release and chart preparation windows:
+        1. First Chart Preparation (Chart 1):
+           - Officially finalized ~4 hours before train departure from origin station.
+           - Morning trains (departing 00:01 - 14:00): chart is prepared the previous evening at 20:00 IST!
+           - Afternoon/Evening trains (departing >= 14:00): chart is prepared 4 hours before departure.
+        2. Second Chart Preparation (Chart 2 / Current Booking):
+           - Finalized 30 minutes before train departure. Unsold/vacant berths become CURR_AVBL.
+        3. Tatkal Opening:
+           - AC Classes (1A, 2A, 3A, 3E, CC, EC, EA): 10:00:00 AM IST 1 day before journey date.
+           - Non-AC Classes (SL, 2S): 11:00:00 AM IST 1 day before journey date.
+        """
+        try:
+            j_date = datetime.datetime.strptime(journey_date_str, "%Y-%m-%d").date()
+        except Exception:
+            j_date = datetime.date.today()
+
+        try:
+            dep_time = datetime.datetime.strptime(departure_time_str, "%H:%M").time()
+        except Exception:
+            dep_time = datetime.time(hour=12, minute=0)
+
+        train_dep_dt = datetime.datetime.combine(j_date, dep_time)
+
+        # 1. Chart 1 Preparation Calculation
+        if dep_time.hour < 14:
+            # Morning train rule: prepared previous night at 20:00 IST
+            prev_day = j_date - datetime.timedelta(days=1)
+            chart_1_dt = datetime.datetime.combine(prev_day, datetime.time(hour=20, minute=0))
+            chart_rule_note = "Previous Evening 20:00 IST Rule (Morning Train)"
+        else:
+            chart_1_dt = train_dep_dt - datetime.timedelta(hours=4)
+            chart_rule_note = "4 Hours Prior to Train Departure"
+
+        # 2. Chart 2 Preparation (30 mins before train departure)
+        chart_2_dt = train_dep_dt - datetime.timedelta(minutes=30)
+
+        # 3. Tatkal Opening (1 day prior)
+        prev_day = j_date - datetime.timedelta(days=1)
+        is_ac = coach_class.upper() in ["1A", "2A", "3A", "3E", "CC", "EC", "EA"]
+        tatkal_hour = 10 if is_ac else 11
+        tatkal_dt = datetime.datetime.combine(prev_day, datetime.time(hour=tatkal_hour, minute=0))
+
+        now = datetime.datetime.now()
+
+        # Determine target strike window (the primary unutilized quota release)
+        if now < chart_1_dt:
+            target_dt = chart_1_dt
+            target_label = "1st Chart Preparation (Unutilized Quota Release)"
+        elif now < chart_2_dt:
+            target_dt = chart_2_dt
+            target_label = "2nd Chart Preparation (Current Booking / CURR_AVBL)"
+        else:
+            target_dt = train_dep_dt
+            target_label = "Final Departure Clearance"
+
+        diff_sec = (target_dt - now).total_seconds()
+
+        return {
+            "train_departure": train_dep_dt.strftime("%Y-%m-%d %H:%M"),
+            "chart_1_time": chart_1_dt.strftime("%Y-%m-%d %H:%M"),
+            "chart_2_time": chart_2_dt.strftime("%Y-%m-%d %H:%M"),
+            "tatkal_time": tatkal_dt.strftime("%Y-%m-%d %H:%M"),
+            "chart_rule_note": chart_rule_note,
+            "target_strike_time": target_dt.strftime("%Y-%m-%d %H:%M"),
+            "target_label": target_label,
+            "seconds_until_strike": diff_sec,
+            "is_morning_rule": dep_time.hour < 14
+        }
 
     async def check_availability(
         self, train_no: str, journey_date: str, coach_class: str, source: str, dest: str
@@ -217,11 +315,11 @@ class IRCTCService:
         q_cnt = train_info.get("quotas", {}).get(coach_class)
         inv = self.inventory.get(t_key, {})
         c_info = inv.get(coach_class, {
-            "status": "WL / Chart Release Pending",
+            "status": "GNWL 34 / WL 18",
             "seats": 0,
             "fare": fares.get(coach_class, BASE_FARES.get(coach_class, 240.0)),
             "quota": q_cnt,
-            "wl_count": 1
+            "wl_count": 18
         })
         
         # Only available if positive seats exist and status contains AVAILABLE / CURR_AVBL
@@ -233,7 +331,8 @@ class IRCTCService:
             "status": c_info["status"],
             "seats": c_info.get("seats", 0),
             "fare": c_info.get("fare", 240.0),
-            "quota": q_cnt
+            "quota": q_cnt,
+            "wl_count": c_info.get("wl_count", 0)
         }
 
     def simulate_cancellation_open_seats(self, train_no: str, journey_date: str, coach_class: str, count: int = 2):

@@ -11,6 +11,30 @@ from security import mask_text
 from ticket_generator import generate_ticket_pdf
 from irctc_service import IRCTCService
 
+def compute_dynamic_polling_interval(seconds_until_strike: float) -> tuple[int, str]:
+    """
+    Computes dynamic polling interval based on proximity to target opening/charting time:
+    - > 2 hours away: 900s (15 min) dormant standby
+    - 2h to 1h away: 300s (5 min) alert warmup
+    - 60m to 30m away: 60s (1 min) high-alert polling (as requested by user)
+    - 30m to 10m away: 30s pre-strike ramp-up (decreasing as opening nears)
+    - 10m before to +15m after: 10s hyper-drive strike window (striking the spot)
+    - Post-opening monitoring: 30s
+    """
+    s = seconds_until_strike
+    if s > 7200:
+        return 900, "💤 DORMANT STANDBY (Opens in >2 hrs)"
+    elif s > 3600:
+        return 300, "⏳ WARMUP PHASE (1h-2h to Opening)"
+    elif s > 1800:
+        return 60, "🟡 HIGH ALERT (T-60m Countdown | Polling every 60s)"
+    elif s > 600:
+        return 30, "🟠 PRE-STRIKE RAMP-UP (T-30m Countdown | Polling every 30s)"
+    elif s > -900:
+        return 10, "🔴 HYPER-DRIVE STRIKE ACTIVE (Hitting Chart Prep Spot | Polling every 10s)"
+    else:
+        return 30, "🎯 2ND CHART / CURRENT BOOKING WATCHDOG (Polling every 30s)"
+
 class BackgroundBookingWorker:
     def __init__(self, bot_app, irctc_service: IRCTCService):
         self.bot_app = bot_app
@@ -29,22 +53,26 @@ class BackgroundBookingWorker:
         ])
 
     async def start(self):
-        """Starts the infinite background polling loop."""
+        """Starts the active background polling loop with dynamic interval scheduling."""
         self.is_running = True
-        print("[Scheduler] Started active train monitoring worker.")
+        print("[Scheduler] Started active train monitoring worker with dynamic countdown engine.")
         while self.is_running:
             try:
                 await self.poll_all_active_tasks()
             except Exception as e:
                 print(f"[Scheduler Loop Error] {e}")
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(5)
 
     async def poll_all_active_tasks(self):
-        """Checks availability for all active monitoring tasks."""
+        """Checks availability for all active monitoring tasks based on dynamic intervals."""
         active_tasks = await storage.get_active_tasks()
+        now_ts = datetime.datetime.now().timestamp()
         for task in active_tasks:
             try:
-                await self.check_and_process_task(task, is_manual=False)
+                last_ts = task.get("last_checked_timestamp", 0)
+                interval = task.get("polling_interval", POLL_INTERVAL_SECONDS)
+                if now_ts - last_ts >= interval:
+                    await self.check_and_process_task(task, is_manual=False)
             except Exception as err:
                 print(f"[Scheduler Error on Task {task.get('task_id')}] {err}")
 
@@ -64,16 +92,33 @@ class BackgroundBookingWorker:
         source = task["source_stn"]
         dest = task["dest_stn"]
 
+        # Calculate opening estimation and dynamic countdown
+        open_est = self.service.estimate_ticket_opening(
+            train_no,
+            task.get("departure_time", "00:15"),
+            date,
+            coach_class
+        )
+        diff_sec = open_est.get("seconds_until_strike", 3600)
+        interval_sec, phase_desc = compute_dynamic_polling_interval(diff_sec)
+
         # Increment attempts count
         attempts = task.get("attempts_count", 0) + 1
-        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+        now_dt = datetime.datetime.now()
+        now_str = now_dt.strftime("%H:%M:%S")
 
         # Query availability
         avail = await self.service.check_availability(train_no, date, coach_class, source, dest)
         await storage.update_task(task_id, {
             "attempts_count": attempts,
             "last_checked": now_str,
-            "latest_status": avail["status"]
+            "last_checked_timestamp": now_dt.timestamp(),
+            "latest_status": avail["status"],
+            "polling_interval": interval_sec,
+            "phase_desc": phase_desc,
+            "target_strike_time": open_est["target_strike_time"],
+            "target_label": open_est["target_label"],
+            "chart_rule_note": open_est["chart_rule_note"]
         })
 
         tag = "⚡ [MANUAL TRY NOW]" if is_manual else f"🔄 [AUTOMATIC TRY #{attempts}]"
@@ -101,6 +146,13 @@ class BackgroundBookingWorker:
             # Still in Waiting List / Charting Pending -> Send update to user
             mode_desc = "🎯 [SEAT SNIPER WATCHDOG ACTIVE]" if is_sniper else tag
             quota_line = f"• *Class Quota:* `{avail.get('quota')} Berths`\n" if avail.get("quota") else ""
+            chart_line = (
+                f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
+                f"  _({open_est['chart_rule_note']})_\n"
+            )
+            phase_line = f"• *Monitoring Phase:* {phase_desc}\n"
+            poll_line = f"• *Dynamic Polling Rate:* `Every {interval_sec}s` (Auto-decreasing at opening)\n"
+
             status_text = (
                 f"{mode_desc} at `{now_str}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
@@ -109,10 +161,12 @@ class BackgroundBookingWorker:
                 f"{quota_line}"
                 f"• *Current Status:* `{avail['status']}`\n"
                 f"• *Target:* Confirmed / Current Available (CURR_AVBL)\n"
-                f"• *Chart Prep Window:* ~4 hours before train departure\n"
-                f"• *Total Checks:* `{attempts}` (Next check in {POLL_INTERVAL_SECONDS}s)\n\n"
+                f"{chart_line}"
+                f"{phase_line}"
+                f"{poll_line}"
+                f"• *Total Checks:* `{attempts}`\n\n"
                 f"🛡️ _Sniper is holding fire. It will NEVER book Waiting List._\n"
-                f"When unutilized berths hit the system at chart preparation or upon cancellation, the sniper will strike instantly!"
+                f"As chart preparation approaches (T-60m ➔ T-30m ➔ T-10m), the retry rate automatically accelerates to hit the exact spot when unutilized berths drop into the reservation pool!"
             )
             keyboard = self.get_monitoring_keyboard(task_id)
             await self._send_or_edit_status(chat_id, task_id, status_text, keyboard=keyboard)

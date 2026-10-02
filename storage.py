@@ -148,6 +148,43 @@ async def reset_user_upi(telegram_id: int) -> bool:
             return True
         return False
 
+# ----------------- Passenger Profile Management -----------------
+
+async def save_passenger_profile(
+    telegram_id: int, name: str, age: int, gender: str, berth: str
+) -> None:
+    """Save persistent default passenger profile for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key not in users:
+            users[user_key] = {"telegram_id": telegram_id}
+        users[user_key]["passenger_profile"] = {
+            "name": name.strip(),
+            "age": int(age),
+            "gender": gender.strip(),
+            "berth": berth.strip()
+        }
+        _write_json_sync(USERS_FILE, users)
+
+async def get_passenger_profile(telegram_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve saved default passenger profile for a specific Telegram chat."""
+    user = await get_user(telegram_id)
+    if not user or "passenger_profile" not in user:
+        return None
+    return user.get("passenger_profile")
+
+async def reset_passenger_profile(telegram_id: int) -> bool:
+    """Delete saved passenger profile for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key in users and "passenger_profile" in users[user_key]:
+            del users[user_key]["passenger_profile"]
+            _write_json_sync(USERS_FILE, users)
+            return True
+        return False
+
 
 # ----------------- Active Tasks & Polling Lifecycle -----------------
 
