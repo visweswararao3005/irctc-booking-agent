@@ -420,8 +420,16 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dst = task["dest_stn"]
         date = task["journey_date"]
         attempts = task.get("attempts_count", 0)
-        last_chk = task.get("last_checked") or "Pending first check"
-        latest_stat = task.get("latest_status") or "WL / Awaiting Chart Release"
+        # Auto-refresh outdated or synthetic status to authentic live PRS waitlist
+        if not task.get("latest_status") or "GNWL 26" in str(task.get("latest_status")):
+            try:
+                fresh_avail = await irctc_svc.check_availability(t_num, date, c_class, src, dst)
+                latest_stat = fresh_avail["status"]
+                await storage.update_task(task_id, {"latest_status": latest_stat})
+            except Exception:
+                latest_stat = task.get("latest_status") or "WL / Awaiting Chart Release"
+        else:
+            latest_stat = task.get("latest_status") or "WL / Awaiting Chart Release"
         pay_mode = task.get("payment_method", "Instant Pay")
         p_info = task.get("passengers", [{}])[0]
         p_name = p_info.get("name", "Passenger")
@@ -1504,6 +1512,9 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Check live seat status
     avail = await irctc_svc.check_availability(u["train_number"], u["date"], u["coach_class"], u["source"], u["dest"])
+    open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
+    from scheduler import compute_dynamic_polling_interval
+    interval_sec, phase_desc = compute_dynamic_polling_interval(open_est.get("seconds_until_strike", 3600))
 
     task_data = {
         "telegram_id": tg_id,
@@ -1519,6 +1530,12 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "upi_id": u.get("upi_id") or await storage.get_decrypted_upi(tg_id),
         "booking_mode": booking_mode,
         "passengers": passengers,
+        "latest_status": avail["status"],
+        "polling_interval": interval_sec,
+        "phase_desc": phase_desc,
+        "target_strike_time": open_est["target_strike_time"],
+        "target_label": open_est["target_label"],
+        "chart_rule_note": open_est["chart_rule_note"],
         "created_at": datetime.datetime.now().isoformat()
     }
 
@@ -1542,7 +1559,6 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown"
         )
 
-        open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
         upi_display = f" (`{u.get('upi_id')}`)" if u.get("upi_id") else ""
         initial_card = (
             f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
