@@ -24,6 +24,15 @@ CARD_HOLDER = os.getenv("CARD_HOLDER", "")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 OTP_TIMEOUT_SECONDS = int(os.getenv("OTP_TIMEOUT_SECONDS", "120"))
 
+# Live Payment Gateway Configuration (NPCI UPI Intent, Cashfree & Razorpay)
+MERCHANT_UPI_VPA = os.getenv("MERCHANT_UPI_VPA", "7981141441@ybl")
+MERCHANT_NAME = os.getenv("MERCHANT_NAME", "IRCTC AI Booking Agent")
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+CASHFREE_APP_ID = os.getenv("CASHFREE_APP_ID", "")
+CASHFREE_SECRET_KEY = os.getenv("CASHFREE_SECRET_KEY", "")
+CASHFREE_ENV = os.getenv("CASHFREE_ENV", "PRODUCTION")
+
 # Directories
 DATA_DIR = BASE_DIR / "data"
 TICKETS_DIR = BASE_DIR / "tickets"

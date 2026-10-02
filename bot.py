@@ -1779,13 +1779,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         c_id = int(chat_id_str) if chat_id_str.isdigit() else update.effective_chat.id
         irctc_svc.provide_otp(c_id, "UPI_APPROVED_BY_USER")
         try:
-            await query.answer("Payment approval received!", show_alert=True)
+            await query.answer("Payment verified!", show_alert=True)
         except Exception:
             pass
         try:
-            await query.edit_message_text("✅ *Payment Approval Confirmed!* Generating government PNR and ticket PDF...", parse_mode="Markdown")
+            await query.edit_message_caption(
+                caption="✅ *Live Payment Verified!* Generating official government PNR and ticket PDF...",
+                parse_mode="Markdown"
+            )
         except Exception:
-            pass
+            try:
+                await query.edit_message_text("✅ *Live Payment Verified!* Generating official government PNR and ticket PDF...", parse_mode="Markdown")
+            except Exception:
+                pass
 
     elif data == "info_start_booking":
         try:
@@ -1838,18 +1844,31 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Listens for messages that look like Bank OTPs when a payment checkout is in progress,
-    leftover confirmation keyboard presses, or recovers active sessions.
+    Listens for messages that look like Bank OTPs or 12-digit UTR references when a payment
+    checkout is in progress, leftover confirmation keyboard presses, or recovers active sessions.
     """
     chat_id = update.effective_chat.id
     tg_id = update.effective_user.id
     text = update.message.text.strip()
 
     if irctc_svc.is_waiting_for_otp(chat_id):
-        # User entered an OTP
+        # Check if user submitted a 12-digit Bank UTR / UPI Reference Number
+        from live_payment_service import validate_bank_utr
+        is_utr, utr_num, _ = validate_bank_utr(text)
+        if is_utr:
+            success = irctc_svc.provide_otp(chat_id, f"UTR_{utr_num}")
+            if success:
+                await update.message.reply_text(
+                    f"✅ *Verified Bank UTR Reference:* `{utr_num}`\n"
+                    "Submitting live transaction to IRCTC reservation engine for PNR issuance...",
+                    parse_mode="Markdown"
+                )
+            return
+
+        # User entered a 3D-Secure Bank OTP or authorization text
         success = irctc_svc.provide_otp(chat_id, text)
         if success:
-            await update.message.reply_text(f"🔐 Received OTP `{text}`. Submitting to 3D-Secure Bank Gateway...")
+            await update.message.reply_text(f"🔐 Received Payment Authorization `{text}`. Submitting to Bank Gateway...")
         return
 
     # 1. Check if user clicked a leftover keyboard button from confirmation

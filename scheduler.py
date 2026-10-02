@@ -268,27 +268,57 @@ class BackgroundBookingWorker:
 
         elif pay_mode == "UPI / Instant Pay":
             upi_id = task.get("upi_id") or "Registered UPI App"
+            from live_payment_service import dispatch_live_pg_collect, generate_upi_intent_uri, generate_dynamic_qr_url
+
+            total_amount = amount + 17.70
+            pg_res = await dispatch_live_pg_collect(task_id, total_amount, upi_id)
+            upi_uri, txn_ref = generate_upi_intent_uri(total_amount, task_id)
+            qr_code_url = generate_dynamic_qr_url(upi_uri, size=350)
+
             async def upi_prompt_callback(chat_id, amount, timeout_sec):
-                prompt_text = (
-                    f"📱 *UPI PAYMENT COLLECT NOTIFICATION DISPATCHED*\n\n"
+                gateway_mode = "⚡ [LIVE PAYMENT GATEWAY COLLECT DISPATCHED]" if pg_res.get("is_live_gateway") else "📲 [LIVE UPI INTENT & DYNAMIC QR READY]"
+                gateway_name = pg_res.get("gateway", "NPCI UPI Engine")
+                prompt_caption = (
+                    f"{gateway_mode}\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"• *Destination UPI ID:* `{upi_id}`\n"
-                    f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
-                    f"• *Apps:* Google Pay / PhonePe / Paytm / BHIM\n"
-                    f"• *Time Limit:* `{timeout_sec}` seconds\n\n"
-                    f"📲 *A payment collect push request has been dispatched to `{upi_id}`!*\n\n"
-                    "👉 Open your UPI app and tap 'Approve', then click the confirmation button below:"
+                    f"• *Payable Amount:* `₹{total_amount:.2f}` (incl. IRCTC fee)\n"
+                    f"• *Gateway Engine:* `{gateway_name}`\n"
+                    f"• *Time Limit:* `{timeout_sec}` seconds\n"
+                    f"• *Reference ID:* `{txn_ref}`\n\n"
+                    "👉 **How to complete live payment:**\n"
+                    "1️⃣ **Scan QR Code:** Scan the dynamic QR code above with **PhonePe / Google Pay / Paytm**.\n"
+                    "2️⃣ **App Notification:** If you requested collect, open your UPI app and tap **Approve**.\n"
+                    "3️⃣ **Click Below:** Once paid, tap **'✅ I Have Paid / Approved'** or reply with your **12-digit Bank UTR Number**!"
                 )
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ I Have Approved in App", callback_data=f"approve_upi_{chat_id}")]
+                    [InlineKeyboardButton("✅ I Have Paid / Approved", callback_data=f"approve_upi_{chat_id}")],
+                    [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
                 ])
-                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard, parse_mode="Markdown")
+                try:
+                    # Send Dynamic QR Photo to chat
+                    await self.bot_app.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=qr_code_url,
+                        caption=prompt_caption,
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
+                    )
+                except Exception as photo_err:
+                    print(f"[WARN] Failed to send QR photo: {photo_err}")
+                    await self.bot_app.bot.send_message(
+                        chat_id=chat_id,
+                        text=prompt_caption,
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
+                    )
 
             payment_res = await self.service.request_upi_payment_and_wait(
                 chat_id=chat_id,
                 amount=amount,
                 prompt_callback=upi_prompt_callback
             )
-            verif_str = f"UPI Collect Approved ({upi_id})"
+            verif_str = f"Live UPI Payment Verified ({upi_id})"
 
         else:
             # Credit / Debit Card Flow

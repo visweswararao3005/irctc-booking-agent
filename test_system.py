@@ -477,8 +477,47 @@ async def run_tests():
 
     print("   • safe_reply Fallback on Telegram Markdown Error: PASSED (Zero crashes)")
     print("   • cmd_tasks with Live Active Task & last_chk:    PASSED (Zero NameError)")
-    print("   • cmd_profile Display & 1-Click Visibility:      PASSED")
-    print("✅ Telegram Crash-Proof Messaging & Profile Engine: PASSED")
+    # 15. Test Live Payment Gateway & Dynamic UPI QR Engine
+    print("\n[Test 15] Testing Live Payment Gateway, Dynamic UPI QR & UTR Validation...")
+    from live_payment_service import (
+        generate_upi_intent_uri,
+        generate_dynamic_qr_url,
+        validate_bank_utr,
+        dispatch_live_pg_collect
+    )
+
+    # Case A: NPCI UPI Intent URI Generation
+    uri, txn = generate_upi_intent_uri(257.70, "test1234", merchant_vpa="7981141441@ybl", merchant_name="IRCTC Agent")
+    assert uri.startswith("upi://pay?"), f"Invalid UPI URI: {uri}"
+    assert "pa=7981141441%40ybl" in uri or "pa=7981141441@ybl" in uri, "Merchant VPA missing in UPI URI"
+    assert "am=257.70" in uri, "Amount missing in UPI URI"
+    assert "cu=INR" in uri, "Currency missing in UPI URI"
+
+    # Case B: Dynamic QR Code URL Generation
+    qr_url = generate_dynamic_qr_url(uri, size=350)
+    assert qr_url.startswith("https://api.qrserver.com/v1/create-qr-code/"), f"Invalid QR URL: {qr_url}"
+    assert "350x350" in qr_url, "QR size mismatch"
+
+    # Case C: 12-Digit Bank UTR Validation
+    utr_ok1, u1, _ = validate_bank_utr("428192849102")
+    assert utr_ok1 and u1 == "428192849102", "Failed direct 12-digit UTR"
+
+    utr_ok2, u2, _ = validate_bank_utr("UPI Ref / UTR: 4281 9284 9102 (Paid via PhonePe)")
+    assert utr_ok2 and u2 == "428192849102", "Failed dirty UTR string extraction"
+
+    utr_bad1, _, err_bad1 = validate_bank_utr("12345")
+    assert not utr_bad1, "Failed to reject short UTR"
+
+    # Case D: Live PG Dispatch Fallback/Execution
+    pg_res = await dispatch_live_pg_collect("tkt999", 257.70, "7981141441@ybl")
+    assert pg_res is not None, "pg_res was None"
+    assert "order_id" in pg_res or "status" in pg_res, "Missing order status"
+
+    print(f"   • Generated NPCI UPI URI:     {uri[:45]}...")
+    print(f"   • Dynamic QR Code Link:       {qr_url[:45]}...")
+    print(f"   • Valid 12-Digit Bank UTR:    {u1} (Verified)")
+    print(f"   • Gateway Engine Mode:        {pg_res.get('gateway')} ({pg_res.get('status')})")
+    print("✅ Live Payment Gateway & Dynamic UPI QR Engine: PASSED")
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
