@@ -434,9 +434,19 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p_info = task.get("passengers", [{}])[0]
         p_name = p_info.get("name", "Passenger")
 
-        phase_line = f"• *Monitoring Phase:* {task.get('phase_desc')}\n" if task.get("phase_desc") else ""
-        poll_line = f"• *Dynamic Polling Rate:* Every {task.get('polling_interval', 60)}s (Auto-accelerates at opening)\n" if task.get("polling_interval") else ""
         chart_line = f"• *Estimated Chart Prep:* `{task.get('target_strike_time')} IST`\n" if task.get("target_strike_time") else ""
+        w_start = task.get("watchdog_start_time")
+        is_active = task.get("is_watchdog_active", False)
+        if w_start and not is_active:
+            watchdog_line = (
+                f"• *Watchdog Start Time:* `{w_start} IST`\n"
+                f"• *Mode:* 💤 `SCHEDULED SLEEP` (Zero spam; active looping begins 1h before chart prep)\n"
+            )
+        else:
+            poll_int = task.get('polling_interval', 60)
+            watchdog_line = (
+                f"• *Watchdog Mode:* ⚡ `ACTIVE LOOPING` (Polling every {poll_int}s)\n"
+            )
 
         task_card = (
             f"🎯 *Task ID:* `{task_id}`\n"
@@ -446,8 +456,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• *Current Status:* `{latest_stat}`\n"
             f"• *Target:* Confirmed / Current Available (`CURR_AVBL`)\n"
             f"{chart_line}"
-            f"{phase_line}"
-            f"{poll_line}"
+            f"{watchdog_line}"
             f"• *Payment Mode:* {pay_mode}\n"
             f"• *Checks Performed:* `{attempts}` (Last: `{last_chk}`)\n\n"
             "👉 Tap below to trigger a live check or cancel monitoring:"
@@ -1534,8 +1543,15 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "polling_interval": interval_sec,
         "phase_desc": phase_desc,
         "target_strike_time": open_est["target_strike_time"],
+        "target_strike_timestamp": open_est["target_strike_timestamp"],
         "target_label": open_est["target_label"],
+        "watchdog_start_time": open_est["watchdog_start_time"],
+        "watchdog_start_timestamp": open_est["watchdog_start_timestamp"],
+        "is_watchdog_active": open_est["is_watchdog_active"],
         "chart_rule_note": open_est["chart_rule_note"],
+        "attempts_count": 1,
+        "last_checked": datetime.datetime.now().strftime("%H:%M:%S"),
+        "last_checked_timestamp": datetime.datetime.now().timestamp(),
         "created_at": datetime.datetime.now().isoformat()
     }
 
@@ -1559,6 +1575,17 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown"
         )
 
+        if not open_est["is_watchdog_active"]:
+            watchdog_mode_info = (
+                f"• *Watchdog Start Time:* `{open_est['watchdog_start_time']} IST`\n"
+                f"• *Monitoring Mode:* 💤 `SCHEDULED SLEEP`\n"
+                f"  _(Watchdog is dormant; zero 15-min polling spam. Active looping begins 1 hr before chart prep)_\n"
+            )
+        else:
+            watchdog_mode_info = (
+                f"• *Monitoring Mode:* ⚡ `ACTIVE LOOPING` (Polling every {interval_sec}s)\n"
+            )
+
         upi_display = f" (`{u.get('upi_id')}`)" if u.get("upi_id") else ""
         initial_card = (
             f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
@@ -1570,10 +1597,11 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"• *Payment:* `{u.get('payment_method')}`{upi_display}\n"
             f"• *Target:* Confirmed / Current Available Berths (CNF / CURR_AVBL)\n"
             f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
-            f"  _({open_est['chart_rule_note']})_\n\n"
-            f"🛡️ *Dynamic Charting Watchdog Active:*\n"
+            f"  _({open_est['chart_rule_note']})_\n"
+            f"{watchdog_mode_info}\n"
+            f"🛡️ *Dynamic Charting Watchdog Rules:*\n"
             f"• The agent will **NEVER** book a Waiting List (WL) ticket.\n"
-            f"• Polling schedule automatically accelerates: Standby ➔ **60s** at T-60m ➔ **30s** at T-30m ➔ **10s** at T-10m.\n"
+            f"• Once the trigger point arrives, polling automatically accelerates: **60s** at T-60m ➔ **30s** at T-30m ➔ **10s** at T-10m.\n"
             f"• The sniper will strike and alert you the exact moment confirmed berths open!\n\n"
             f"👉 Click *'Try Now'* below to test a live check anytime! 👇"
         )

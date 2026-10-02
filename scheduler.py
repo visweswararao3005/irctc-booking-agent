@@ -11,16 +11,18 @@ from security import mask_text
 from ticket_generator import generate_ticket_pdf
 from irctc_service import IRCTCService
 
-def compute_dynamic_polling_interval(seconds_until_strike: float) -> tuple[int, str]:
+def compute_dynamic_polling_interval(seconds_until_strike: float, seconds_until_watchdog_start: float = 0) -> tuple[int, str]:
     """
     Computes dynamic polling interval based on proximity to target opening/charting time:
-    - > 2 hours away: 900s (15 min) dormant standby
-    - 2h to 1h away: 300s (5 min) alert warmup
-    - 60m to 30m away: 60s (1 min) high-alert polling (as requested by user)
-    - 30m to 10m away: 30s pre-strike ramp-up (decreasing as opening nears)
+    - If before watchdog start time (>0s): Scheduled Sleep (ZERO continuous 15-min loops!)
+    - 60m to 30m away: 60s (1 min) high-alert polling (active loop starts!)
+    - 30m to 10m away: 30s pre-strike ramp-up
     - 10m before to +15m after: 10s hyper-drive strike window (striking the spot)
     - Post-opening monitoring: 30s
     """
+    if seconds_until_watchdog_start > 0:
+        return int(seconds_until_watchdog_start), "💤 SCHEDULED SLEEP (Dormant until start point; zero spam)"
+
     s = seconds_until_strike
     if s > 7200:
         return 900, "💤 DORMANT STANDBY (Opens in >2 hrs)"
@@ -69,6 +71,13 @@ class BackgroundBookingWorker:
         now_ts = datetime.datetime.now().timestamp()
         for task in active_tasks:
             try:
+                # Point-of-time check: If current time is before watchdog start time, DO NOT LOOP!
+                watchdog_start_ts = task.get("watchdog_start_timestamp", 0)
+                if watchdog_start_ts and now_ts < watchdog_start_ts:
+                    # If already checked at least once on creation, sleep silently until start point
+                    if task.get("attempts_count", 0) > 0:
+                        continue
+
                 last_ts = task.get("last_checked_timestamp", 0)
                 interval = task.get("polling_interval", POLL_INTERVAL_SECONDS)
                 if now_ts - last_ts >= interval:
@@ -100,7 +109,9 @@ class BackgroundBookingWorker:
             coach_class
         )
         diff_sec = open_est.get("seconds_until_strike", 3600)
-        interval_sec, phase_desc = compute_dynamic_polling_interval(diff_sec)
+        sec_to_start = open_est.get("seconds_until_watchdog_start", 0)
+        is_active = open_est.get("is_watchdog_active", True)
+        interval_sec, phase_desc = compute_dynamic_polling_interval(diff_sec, sec_to_start if not is_manual else 0)
 
         # Increment attempts count
         attempts = task.get("attempts_count", 0) + 1
@@ -117,7 +128,11 @@ class BackgroundBookingWorker:
             "polling_interval": interval_sec,
             "phase_desc": phase_desc,
             "target_strike_time": open_est["target_strike_time"],
+            "target_strike_timestamp": open_est["target_strike_timestamp"],
             "target_label": open_est["target_label"],
+            "watchdog_start_time": open_est["watchdog_start_time"],
+            "watchdog_start_timestamp": open_est["watchdog_start_timestamp"],
+            "is_watchdog_active": is_active,
             "chart_rule_note": open_est["chart_rule_note"]
         })
 
@@ -150,8 +165,18 @@ class BackgroundBookingWorker:
                 f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
                 f"  _({open_est['chart_rule_note']})_\n"
             )
-            phase_line = f"• *Monitoring Phase:* {phase_desc}\n"
-            poll_line = f"• *Dynamic Polling Rate:* `Every {interval_sec}s` (Auto-decreasing at opening)\n"
+
+            if not is_active:
+                watchdog_mode_line = (
+                    f"• *Watchdog Start Time:* `{open_est['watchdog_start_time']} IST`\n"
+                    f"• *Monitoring Mode:* 💤 `SCHEDULED SLEEP`\n"
+                    f"  _(Watchdog dormant; zero 15-min spam. Active polling loop starts 1 hr before chart prep)_\n"
+                )
+            else:
+                watchdog_mode_line = (
+                    f"• *Monitoring Phase:* {phase_desc}\n"
+                    f"• *Dynamic Polling Rate:* `Every {interval_sec}s` (Auto-decreasing at opening)\n"
+                )
 
             status_text = (
                 f"{mode_desc} at `{now_str}`\n"
@@ -162,8 +187,7 @@ class BackgroundBookingWorker:
                 f"• *Current Status:* `{avail['status']}`\n"
                 f"• *Target:* Confirmed / Current Available (CURR_AVBL)\n"
                 f"{chart_line}"
-                f"{phase_line}"
-                f"{poll_line}"
+                f"{watchdog_mode_line}"
                 f"• *Total Checks:* `{attempts}`\n\n"
                 f"🛡️ _Sniper is holding fire. It will NEVER book Waiting List._\n"
                 f"As chart preparation approaches (T-60m ➔ T-30m ➔ T-10m), the retry rate automatically accelerates to hit the exact spot when unutilized berths drop into the reservation pool!"

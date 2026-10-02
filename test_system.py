@@ -325,12 +325,16 @@ async def run_tests():
     # Case A: Morning train (e.g. 16022 Kaveri Exp at 00:15) -> Previous day 20:00 IST rule
     est_morning = service.estimate_ticket_opening("16022", "00:15", "2026-10-15", "SL")
     assert "2026-10-14 20:00" in est_morning["chart_1_time"], f"Morning rule failed: {est_morning['chart_1_time']}"
+    assert "2026-10-14 19:00" in est_morning["watchdog_start_time"], f"Watchdog start time failed: {est_morning['watchdog_start_time']}"
+    assert est_morning["is_watchdog_active"] is False, "Watchdog should be dormant for future date"
     assert est_morning["is_morning_rule"] is True
     print(f"   • Morning Train Chart 1 Time: {est_morning['chart_1_time']} ({est_morning['chart_rule_note']})")
+    print(f"   • Watchdog Start Point:       {est_morning['watchdog_start_time']} IST (Dormant until 1h before chart prep)")
 
     # Case B: Afternoon train (e.g. 12603 at 16:45) -> 4 hours prior rule (12:45)
     est_afternoon = service.estimate_ticket_opening("12603", "16:45", "2026-10-15", "SL")
     assert "2026-10-15 12:45" in est_afternoon["chart_1_time"], f"4h rule failed: {est_afternoon['chart_1_time']}"
+    assert "2026-10-15 11:45" in est_afternoon["watchdog_start_time"]
     assert est_afternoon["is_morning_rule"] is False
     print(f"   • Afternoon Train Chart 1 Time: {est_afternoon['chart_1_time']} ({est_afternoon['chart_rule_note']})")
 
@@ -338,6 +342,10 @@ async def run_tests():
     # Standby (>2h): 900s
     int_standby, desc_standby = compute_dynamic_polling_interval(8000)
     assert int_standby == 900, f"Expected 900s standby, got {int_standby}"
+
+    # Case D: Scheduled Sleep before watchdog start point (Zero 15-min spam!)
+    int_sleep, desc_sleep = compute_dynamic_polling_interval(80000, seconds_until_watchdog_start=76400)
+    assert int_sleep == 76400 and "SCHEDULED SLEEP" in desc_sleep, f"Expected scheduled sleep, got {int_sleep}, {desc_sleep}"
 
     # High Alert (60m to 30m): 60s
     int_60m, desc_60m = compute_dynamic_polling_interval(2400)
@@ -351,10 +359,11 @@ async def run_tests():
     int_strike, desc_strike = compute_dynamic_polling_interval(300)
     assert int_strike == 10, f"Expected 10s at strike spot, got {int_strike}"
 
-    print(f"   • Standby Polling: {int_standby}s ({desc_standby})")
-    print(f"   • T-40m Polling:   {int_60m}s ({desc_60m})")
-    print(f"   • T-20m Polling:   {int_30m}s ({desc_30m})")
-    print(f"   • Strike Polling:  {int_strike}s ({desc_strike})")
+    print(f"   • Scheduled Sleep Mode: {int_sleep}s ({desc_sleep})")
+    print(f"   • Standby Polling:      {int_standby}s ({desc_standby})")
+    print(f"   • T-40m Polling:        {int_60m}s ({desc_60m})")
+    print(f"   • T-20m Polling:        {int_30m}s ({desc_30m})")
+    print(f"   • Strike Polling:       {int_strike}s ({desc_strike})")
     print("✅ Ticket Opening Estimation & Dynamic Polling Rate Engine: PASSED")
 
     # 13. Test Smart UPI & Mobile Number Detection

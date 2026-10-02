@@ -479,6 +479,11 @@ class IRCTCService:
 
         diff_sec = (target_dt - now).total_seconds()
 
+        # Watchdog Start Trigger Point: Dormant sleep until 1 hour before target strike
+        watchdog_start_dt = target_dt - datetime.timedelta(hours=1)
+        sec_until_watchdog_start = (watchdog_start_dt - now).total_seconds()
+        is_watchdog_active = sec_until_watchdog_start <= 0
+
         return {
             "train_departure": train_dep_dt.strftime("%Y-%m-%d %H:%M"),
             "chart_1_time": chart_1_dt.strftime("%Y-%m-%d %H:%M"),
@@ -486,8 +491,13 @@ class IRCTCService:
             "tatkal_time": tatkal_dt.strftime("%Y-%m-%d %H:%M"),
             "chart_rule_note": chart_rule_note,
             "target_strike_time": target_dt.strftime("%Y-%m-%d %H:%M"),
+            "target_strike_timestamp": target_dt.timestamp(),
             "target_label": target_label,
             "seconds_until_strike": diff_sec,
+            "watchdog_start_time": watchdog_start_dt.strftime("%Y-%m-%d %H:%M"),
+            "watchdog_start_timestamp": watchdog_start_dt.timestamp(),
+            "seconds_until_watchdog_start": sec_until_watchdog_start,
+            "is_watchdog_active": is_watchdog_active,
             "is_morning_rule": dep_time.hour < 14
         }
 
