@@ -1329,6 +1329,13 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await global_scheduler.check_and_process_task(await storage.get_task(task_id), is_manual=False)
     else:
         # Sniper Mode Activated
+        # 1. First remove the custom reply keyboard cleanly from the user's screen
+        await update.message.reply_text(
+            "🎯 *Seat Sniper activated! Initializing live reservation watchdog...*",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+
         upi_display = f" (`{u.get('upi_id')}`)" if u.get("upi_id") else ""
         initial_card = (
             f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
@@ -1374,46 +1381,90 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("cal_"):
         return await handle_date_calendar_callback(update, context)
 
-    await query.answer()
-
     if data.startswith("try_"):
         task_id = data.replace("try_", "")
+        try:
+            await query.answer("🔄 Checking live IRCTC reservation status...")
+        except Exception:
+            pass
+
         if global_scheduler:
             res = await global_scheduler.trigger_manual_check(task_id)
             if not res:
-                await query.answer("Task is no longer active or already completed.", show_alert=True)
-            else:
-                await query.answer("Manual check completed!")
+                try:
+                    await query.edit_message_text(
+                        f"ℹ️ *Task `{task_id}` is no longer active or already completed.*",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+
     elif data.startswith("cancel_"):
         task_id = data.replace("cancel_", "")
         deleted = await storage.delete_task(task_id)
+        try:
+            await query.answer("Monitoring cancelled.")
+        except Exception:
+            pass
         if deleted:
-            await query.edit_message_text(
-                f"🛑 *Monitoring for Task `{task_id}` has been cancelled.*",
-                parse_mode="Markdown"
-            )
+            try:
+                await query.edit_message_text(
+                    f"🛑 *Monitoring for Task `{task_id}` has been cancelled.*",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
         else:
-            await query.answer("Task was already stopped.", show_alert=True)
+            try:
+                await query.edit_message_text(
+                    f"ℹ️ *Task `{task_id}` was already stopped.*",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
     elif data.startswith("approve_upi_"):
         chat_id_str = data.replace("approve_upi_", "")
         c_id = int(chat_id_str) if chat_id_str.isdigit() else update.effective_chat.id
         irctc_svc.provide_otp(c_id, "UPI_APPROVED_BY_USER")
-        await query.answer("Payment approval received! Generating confirmed ticket...", show_alert=True)
-        await query.edit_message_text("✅ *Payment Approval Confirmed!* Generating government PNR and ticket PDF...", parse_mode="Markdown")
+        try:
+            await query.answer("Payment approval received!", show_alert=True)
+        except Exception:
+            pass
+        try:
+            await query.edit_message_text("✅ *Payment Approval Confirmed!* Generating government PNR and ticket PDF...", parse_mode="Markdown")
+        except Exception:
+            pass
+
     elif data == "info_start_booking":
+        try:
+            await query.answer()
+        except Exception:
+            pass
         await query.message.reply_text(
             "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n*(Example: `KJM-MAS` or `MAS-NLR`)*",
             parse_mode="Markdown"
         )
+
     elif data == "info_view_tasks":
+        try:
+            await query.answer()
+        except Exception:
+            pass
         return await cmd_tasks(update, context)
 
-# ----------------- Global OTP Interceptor -----------------
+    else:
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
+# ----------------- Global Message & Leftover Button Interceptor -----------------
 
 async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Listens for messages that look like Bank OTPs when a payment checkout is in progress,
-    or intelligently recovers active sessions if server restarted.
+    leftover confirmation keyboard presses, or recovers active sessions.
     """
     chat_id = update.effective_chat.id
     tg_id = update.effective_user.id
@@ -1426,12 +1477,34 @@ async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(f"🔐 Received OTP `{text}`. Submitting to 3D-Secure Bank Gateway...")
         return
 
-    # 1. Check if user tapped a train option like "16022 - KAVERI EXPRESS (00:15)"
+    # 1. Check if user clicked a leftover keyboard button from confirmation
+    if any(k in text.upper() for k in ["ACTIVATE SEAT SNIPER", "BOOK NOW", "CONFIRM", "BACK"]):
+        active_tasks = await storage.get_active_tasks_for_user(tg_id)
+        if active_tasks:
+            t = active_tasks[-1]
+            await update.message.reply_text(
+                f"🎯 *Seat Sniper is already active for Task* `{t['task_id']}`!\n\n"
+                f"• *Train:* `{t.get('train_number')}` ({t.get('coach_class')}) - {t.get('train_name', 'EXP')}\n"
+                f"• *Route:* {t.get('source_stn')} ➔ {t.get('dest_stn')} ({t.get('journey_date')})\n"
+                f"• *Status:* `{t.get('latest_status', 'MONITORING')}`\n\n"
+                f"💡 Type `/tasks` to view active monitoring or `hi` to start a new search.",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "ℹ️ No booking in progress. Send `hi` or `/start` to start a new booking.",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown"
+            )
+        return
+
+    # 2. Check if user tapped a train option like "16022 - KAVERI EXPRESS (00:15)"
     train_match = re.match(r"^(\d{5})\s*-\s*(.+?)(?:\s*\(\d{2}:\d{2}\))?$", text)
     if train_match:
         return await handle_out_of_state_train_selection(update, context)
 
-    # 2. Check if user typed a route like "KJM - MAS" or "KJM-MAS"
+    # 3. Check if user typed a route like "KJM - MAS" or "KJM-MAS"
     cleaned = re.sub(r"\s*(->|➔|TO|-|–|/)\s*", "-", text, flags=re.IGNORECASE).strip()
     if "-" not in cleaned and " " in cleaned:
         cleaned = re.sub(r"\s+", "-", cleaned).strip()
@@ -1442,5 +1515,7 @@ async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Normal unrecognized message outside conversation
     await update.message.reply_text(
-        "👋 Hello! Send `hi` or a route like `KJM-MAS` to book a train ticket, or `/account` to manage credentials."
+        "👋 Hello! Send `hi` or a route like `KJM-MAS` to book a train ticket, `/tasks` for active monitoring, or `/info` for a complete guide.",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown"
     )

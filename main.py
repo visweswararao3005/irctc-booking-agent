@@ -192,7 +192,13 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_potential_otp))
 
     async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        err_str = str(context.error) if context.error else ""
         print(f"[ERROR] Exception while handling update: {context.error}")
+
+        # Ignore benign Telegram network or callback-already-answered/message-not-modified errors
+        if any(ignorable in err_str.lower() for ignorable in ["message is not modified", "query is too old", "query id is invalid", "query has already been answered"]):
+            return
+
         if isinstance(update, Update) and update.effective_message:
             try:
                 await update.effective_message.reply_text(

@@ -135,13 +135,26 @@ class BackgroundBookingWorker:
                 # If editing fails (e.g. message too old or text identical), send a fresh one
                 pass
 
-        new_msg = await self.bot_app.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
-        self.status_message_ids[task_id] = new_msg.message_id
+        try:
+            new_msg = await self.bot_app.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            self.status_message_ids[task_id] = new_msg.message_id
+        except Exception:
+            clean_text = text.replace("*", "").replace("`", "").replace("_", "")
+            try:
+                new_msg = await self.bot_app.bot.send_message(
+                    chat_id=chat_id,
+                    text=clean_text,
+                    reply_markup=keyboard,
+                    parse_mode=None
+                )
+                self.status_message_ids[task_id] = new_msg.message_id
+            except Exception:
+                pass
 
     async def _execute_booking_flow(self, task: Dict[str, Any], avail: Dict[str, Any]):
         """Executes payment, waits for Bank OTP via Telegram, and sends ticket PDF."""
