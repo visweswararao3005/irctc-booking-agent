@@ -148,6 +148,37 @@ async def reset_user_upi(telegram_id: int) -> bool:
             return True
         return False
 
+# ----------------- IRCTC eWallet Management -----------------
+
+async def save_user_ewallet(telegram_id: int, ewallet_pin: str) -> None:
+    """Save encrypted IRCTC eWallet Transaction PIN for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key not in users:
+            users[user_key] = {"telegram_id": telegram_id}
+        users[user_key]["ewallet_pin"] = encrypt_text(ewallet_pin.strip())
+        _write_json_sync(USERS_FILE, users)
+
+async def get_decrypted_ewallet(telegram_id: int) -> Optional[str]:
+    """Retrieve decrypted IRCTC eWallet Transaction PIN for a specific Telegram chat."""
+    user = await get_user(telegram_id)
+    if not user or "ewallet_pin" not in user:
+        return None
+    dec = decrypt_text(user.get("ewallet_pin", ""))
+    return dec if dec else None
+
+async def reset_user_ewallet(telegram_id: int) -> bool:
+    """Delete stored IRCTC eWallet credentials for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key in users and "ewallet_pin" in users[user_key]:
+            del users[user_key]["ewallet_pin"]
+            _write_json_sync(USERS_FILE, users)
+            return True
+        return False
+
 # ----------------- Passenger Profile Management -----------------
 
 async def save_passenger_profile(

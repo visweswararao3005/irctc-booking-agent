@@ -113,6 +113,7 @@ async def run_bot():
             bot.STATE_CARD_EXP: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_exp)],
             bot.STATE_CARD_CVV: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_cvv)],
             bot.STATE_CARD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_card_name)],
+            bot.STATE_EWALLET_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_ewallet_pin)],
             bot.STATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_confirm)],
         },
         fallbacks=[
@@ -171,10 +172,31 @@ async def run_bot():
         allow_reentry=True
     )
 
+    # 4. IRCTC eWallet Setup/Change Conversation Handler
+    wallet_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("change_wallet", bot.start_change_wallet),
+            CommandHandler("set_wallet", bot.start_change_wallet),
+        ],
+        states={
+            bot.STATE_SET_WALLET_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_wallet_pin)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", bot.cancel_booking),
+            CommandHandler("start", bot.start_booking),
+            CommandHandler("book", bot.start_booking),
+            CommandHandler("info", bot.cmd_info),
+            CommandHandler("task", bot.cmd_tasks),
+            CommandHandler("tasks", bot.cmd_tasks),
+        ],
+        allow_reentry=True
+    )
+
     # Register handlers
     app.add_handler(booking_conv)
     app.add_handler(account_conv)
     app.add_handler(card_conv)
+    app.add_handler(wallet_conv)
     app.add_handler(CommandHandler("start", bot.start_booking))
     app.add_handler(CommandHandler("book", bot.start_booking))
     app.add_handler(CommandHandler("info", bot.cmd_info))
@@ -189,6 +211,9 @@ async def run_bot():
     app.add_handler(CommandHandler("reset_account", bot.cmd_reset_account))
     app.add_handler(CommandHandler("upi", bot.cmd_upi))
     app.add_handler(CommandHandler("reset_upi", bot.cmd_reset_upi))
+    app.add_handler(CommandHandler("wallet", bot.cmd_wallet))
+    app.add_handler(CommandHandler("ewallet", bot.cmd_wallet))
+    app.add_handler(CommandHandler("reset_wallet", bot.cmd_reset_wallet))
     app.add_handler(CommandHandler("card", bot.cmd_card))
     app.add_handler(CommandHandler("payment", bot.cmd_card))
     app.add_handler(CommandHandler("reset_card", bot.cmd_reset_card))

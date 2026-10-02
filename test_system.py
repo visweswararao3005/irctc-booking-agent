@@ -519,6 +519,65 @@ async def run_tests():
     print(f"   • Gateway Engine Mode:        {pg_res.get('gateway')} ({pg_res.get('status')})")
     print("✅ Live Payment Gateway & Dynamic UPI QR Engine: PASSED")
 
+    # -------------------------------------------------------------
+    # [Test 16] Live Credit/Debit Card Sessions & Official IRCTC eWallet
+    # -------------------------------------------------------------
+    print("\n[Test 16] Testing Live Card Sessions & Official IRCTC eWallet Auto-Debit Engine...")
+    from live_payment_service import create_live_card_payment_session, process_live_ewallet_payment
+
+    # 1. Live Card 3D-Secure Session
+    card_test_info = {"card_number": "5241829104825555", "card_holder": "Balaji P"}
+    card_session = await create_live_card_payment_session(
+        task_id="taskcard123",
+        amount=580.0,
+        card_info=card_test_info,
+        customer_phone="9876543210"
+    )
+    assert card_session is not None, "Card session was None"
+    assert "5555" in card_session.get("card_mask", ""), "Card mask did not contain last 4 digits"
+    assert card_session.get("status") in ["AWAITING_3D_SECURE", "AWAITING_OTP"], f"Unexpected status: {card_session.get('status')}"
+    print(f"   • Live Card Gateway:       {card_session.get('gateway')}")
+    print(f"   • Card Mask:               {card_session.get('card_mask')}")
+    print(f"   • Order ID / Reference:    {card_session.get('order_id')}")
+
+    # 2. Encrypted IRCTC eWallet PIN Storage & Reset
+    test_user_wallet_id = 99887766
+    await storage.save_user_ewallet(test_user_wallet_id, "4829")
+    retrieved_pin = await storage.get_decrypted_ewallet(test_user_wallet_id)
+    assert retrieved_pin == "4829", f"Expected '4829', got {retrieved_pin}"
+
+    # Verify ciphertext storage
+    users_raw = storage._read_json_sync(storage.USERS_FILE)
+    stored_enc = users_raw[str(test_user_wallet_id)]["ewallet_pin"]
+    assert stored_enc != "4829", "Plaintext PIN was stored in JSON!"
+
+    # 3. Official IRCTC eWallet Auto-Debit Processing
+    # Subtest: Invalid / empty PIN
+    err_res = await process_live_ewallet_payment("ew123", 240.0, ewallet_pin="")
+    assert not err_res.get("success"), "Should fail with empty PIN"
+
+    # Subtest: Valid PIN with official IRCTC fee
+    wallet_res = await process_live_ewallet_payment(
+        task_id="ew123",
+        amount=240.0,
+        ewallet_pin="4829",
+        irctc_user="balaji_p"
+    )
+    assert wallet_res.get("success"), f"Wallet debit failed: {wallet_res}"
+    assert wallet_res.get("ewallet_fee") == 11.80, f"Expected Rs. 11.80 fee, got {wallet_res.get('ewallet_fee')}"
+    assert wallet_res.get("total_amount_debited") == 251.80, f"Expected Rs. 251.80 total, got {wallet_res.get('total_amount_debited')}"
+    assert "EWALLET_TXN_" in wallet_res.get("transaction_id", ""), "Missing transaction reference"
+
+    # Clean up test user eWallet
+    reset_ok = await storage.reset_user_ewallet(test_user_wallet_id)
+    assert reset_ok, "Failed to reset test user eWallet"
+    assert (await storage.get_decrypted_ewallet(test_user_wallet_id)) is None, "eWallet PIN was not cleared"
+
+    print(f"   • IRCTC eWallet Fee:       ₹{wallet_res.get('ewallet_fee'):.2f} (Official Rs. 10 + 18% GST)")
+    print(f"   • Total Debited:           ₹{wallet_res.get('total_amount_debited'):.2f}")
+    print(f"   • Authenticated Txn ID:    {wallet_res.get('transaction_id')}")
+    print("✅ Live Card Sessions & Official IRCTC eWallet Auto-Debit: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

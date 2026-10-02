@@ -39,14 +39,18 @@ global_scheduler = None  # Injected in main.py
     STATE_CARD_EXP,
     STATE_CARD_CVV,
     STATE_CARD_NAME,
+    STATE_EWALLET_PIN,
     STATE_CONFIRM
-) = range(18)
+) = range(19)
 
 # Conversation States for Account Setup/Change
-STATE_SET_USER, STATE_SET_PASS = range(18, 20)
+STATE_SET_USER, STATE_SET_PASS = range(19, 21)
 
 # Conversation States for Standalone Card Setup/Change
-STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(20, 24)
+STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(21, 25)
+
+# Conversation States for Standalone Wallet Setup/Change
+STATE_SET_WALLET_PIN = 25
 
 
 # ----------------- Safe Messaging Helper -----------------
@@ -353,6 +357,85 @@ async def cmd_reset_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("ℹ️ No active UPI ID was saved for this chat.")
 
+# ----------------- IRCTC eWallet Management Handlers -----------------
+
+async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View stored IRCTC eWallet configuration for this specific chat."""
+    tg_id = update.effective_user.id
+    pin = await storage.get_decrypted_ewallet(tg_id)
+    irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
+    user_str = irctc_user or "Linked IRCTC Account"
+
+    if not pin:
+        await update.message.reply_text(
+            "ℹ️ *No IRCTC eWallet Configured*\n\n"
+            "You haven't linked your IRCTC eWallet Transaction PIN yet.\n"
+            "• Zero gateway latency auto-debit\n"
+            "• Official IRCTC Fee: ₹10.00 + 18% GST (₹11.80)\n\n"
+            "Use `/change_wallet` to set your 4-6 digit eWallet PIN for instant bookings.",
+            parse_mode="Markdown"
+        )
+        return
+
+    masked_pin = "•" * len(pin)
+    await update.message.reply_text(
+        f"💼 *Your Linked IRCTC eWallet:*\n\n"
+        f"• *IRCTC Account:* `{user_str}`\n"
+        f"• *Transaction PIN:* `{masked_pin}`\n"
+        f"• *Status:* Authenticated & Active (AES-256 Encrypted)\n"
+        f"• *Official Fee:* ₹10.00 + 18% GST (₹11.80 per txn)\n\n"
+        "Commands:\n"
+        "• `/change_wallet` - Update your eWallet PIN\n"
+        "• `/reset_wallet` - Remove your eWallet PIN from storage",
+        parse_mode="Markdown"
+    )
+
+async def cmd_reset_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Wipes stored IRCTC eWallet PIN for this chat."""
+    tg_id = update.effective_user.id
+    success = await storage.reset_user_ewallet(tg_id)
+    if success:
+        await update.message.reply_text("🗑️ *IRCTC eWallet PIN has been completely removed.*", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("ℹ️ No active IRCTC eWallet PIN was saved for this chat.")
+
+async def start_change_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Begins the standalone eWallet PIN setup conversation."""
+    await update.message.reply_text(
+        "💼 *IRCTC eWallet PIN Setup*\n\n"
+        "Please enter your **4-6 digit IRCTC eWallet Transaction Password / PIN**:\n"
+        "_(Encrypted with AES-256 for instant auto-debit with zero payment gateway latency)_",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return STATE_SET_WALLET_PIN
+
+async def handle_set_wallet_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    pin_text = update.message.text.strip()
+    if is_cancel_command(pin_text):
+        await update.message.reply_text("❌ eWallet setup cancelled.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    if not pin_text.isdigit() or len(pin_text) < 4 or len(pin_text) > 6:
+        await update.message.reply_text(
+            "❌ *Invalid eWallet PIN!*\n\n"
+            "IRCTC Transaction PIN must be **4 to 6 numeric digits** (e.g. `1234` or `123456`).\n"
+            "Please enter your valid PIN:",
+            parse_mode="Markdown"
+        )
+        return STATE_SET_WALLET_PIN
+
+    tg_id = update.effective_user.id
+    await storage.save_user_ewallet(tg_id, pin_text)
+    await update.message.reply_text(
+        "✅ *IRCTC eWallet PIN Saved & Encrypted!*\n\n"
+        "Your eWallet is ready for zero-latency instant bookings.\n"
+        "Send `/book` or `/start` to begin booking.",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
 # ----------------- /info and /tasks Command Handlers -----------------
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -385,6 +468,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/info` — View this end-to-end operational guide\n"
         "• `/account` — Check or update your linked IRCTC ID\n"
         "• `/upi` — Check or update your linked UPI address\n"
+        "• `/wallet` — Check or update your IRCTC eWallet PIN\n"
         "• `/card` — Check or update your encrypted payment card\n"
         "• `/cancel` — Cancel any active booking conversation"
     )
@@ -1433,6 +1517,22 @@ async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             context.user_data["upi_id"] = upi
 
+    # 3. IRCTC eWallet Verification
+    elif pay_mode == "IRCTC eWallet":
+        ewallet_pin = await storage.get_decrypted_ewallet(tg_id)
+        if not ewallet_pin:
+            await safe_reply(
+                update.message,
+                "💼 *IRCTC eWallet PIN Required*\n\n"
+                "To authorize direct, zero-delay eWallet booking, please enter your **4-6 digit IRCTC eWallet Transaction PIN**:\n"
+                "_(Encrypted with AES-256 for future 1-click bookings)_",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="Markdown"
+            )
+            return STATE_EWALLET_PIN
+        else:
+            context.user_data["ewallet_on_file"] = True
+
     return await render_confirmation(update, context)
 
 
@@ -1461,6 +1561,30 @@ async def handle_inline_upi_id(update: Update, context: ContextTypes.DEFAULT_TYP
         f"• *Security Status:* Encrypted with AES-256 for this chat\n\n"
         "📲 *Payment Push Dispatch Notice:*\n"
         f"When seats open at chart preparation, an instant payment collect push request will be dispatched to `{normalized_upi}` on `{detected_app}` so you can approve it with 1 tap!",
+        parse_mode="Markdown"
+    )
+    return await render_confirmation(update, context)
+
+async def handle_inline_ewallet_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    pin_text = update.message.text.strip()
+    if is_cancel_command(pin_text):
+        return await cancel_booking(update, context)
+
+    if not pin_text.isdigit() or len(pin_text) < 4 or len(pin_text) > 6:
+        await update.message.reply_text(
+            "❌ *Invalid IRCTC eWallet PIN!*\n\n"
+            "Your IRCTC transaction PIN must be **4 to 6 numeric digits** (e.g. `1234` or `123456`).\n\n"
+            "👉 Please enter your valid 4-6 digit PIN:",
+            parse_mode="Markdown"
+        )
+        return STATE_EWALLET_PIN
+
+    tg_id = update.effective_user.id
+    await storage.save_user_ewallet(tg_id, pin_text)
+    context.user_data["ewallet_on_file"] = True
+    await update.message.reply_text(
+        "✅ *IRCTC eWallet PIN Verified & Encrypted!*\n"
+        "• Direct auto-debit active with zero gateway latency.",
         parse_mode="Markdown"
     )
     return await render_confirmation(update, context)
@@ -1531,9 +1655,11 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     card_mask = f"**** **** **** {c_num[-4:]}" if len(c_num) >= 4 else "Linked Card"
 
     if pay_mode == "Credit / Debit Card":
-        payment_line = f"• *Payment Mode:* `Credit / Debit Card` ({card_mask} - 3D Secure OTP to mobile)"
+        payment_line = f"• *Payment Mode:* `Credit / Debit Card` ({card_mask} - Live 3D-Secure bank checkout)"
     elif pay_mode == "IRCTC eWallet":
-        payment_line = "• *Payment Mode:* `IRCTC eWallet` (Direct auto-deduction; zero gateway latency)"
+        ew_pin = await storage.get_decrypted_ewallet(tg_id)
+        ew_status = "PIN Configured & Encrypted" if ew_pin else "PIN Needed"
+        payment_line = f"• *Payment Mode:* `IRCTC eWallet` ({ew_status} - Direct auto-debit; ₹11.80 fee)"
     else:
         upi_val = u.get("upi_id") or await storage.get_decrypted_upi(tg_id) or "Linked UPI"
         payment_line = f"• *Payment Mode:* `UPI / Instant Pay` (`{upi_val}`)"

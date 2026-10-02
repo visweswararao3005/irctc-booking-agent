@@ -258,13 +258,35 @@ class BackgroundBookingWorker:
         pay_mode = task.get("payment_method", "Credit / Debit Card")
 
         if pay_mode == "IRCTC eWallet":
-            await self.bot_app.bot.send_message(
-                chat_id=chat_id,
-                text="💼 *Executing instant payment via IRCTC e-Wallet balance...*",
-                parse_mode="Markdown"
-            )
-            payment_res = await self.service.request_ewallet_payment(chat_id=chat_id, amount=amount)
-            verif_str = "IRCTC eWallet Auto-Debit (Zero Latency)"
+            from live_payment_service import process_live_ewallet_payment
+            ewallet_pin = await storage.get_decrypted_ewallet(task.get("telegram_id"))
+            irctc_user, _ = await storage.get_decrypted_credentials(task.get("telegram_id"))
+
+            if not ewallet_pin:
+                await self.bot_app.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ *IRCTC eWallet Transaction PIN Missing!*\n\nPlease configure your 4-6 digit eWallet PIN using `/wallet` to authorize auto-debit.",
+                    parse_mode="Markdown"
+                )
+                payment_res = {"success": False, "error": "IRCTC eWallet PIN not configured. Use /wallet."}
+            else:
+                await self.bot_app.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"💼 *Authenticating official IRCTC e-Wallet for `{irctc_user or 'Passenger'}`...*\n"
+                        f"• Debit Amount: `₹{amount + 11.80:.2f}` (Fare: ₹{amount:.2f} + IRCTC Fee: ₹11.80)\n"
+                        "• Zero Gateway Latency Auto-Debit active!"
+                    ),
+                    parse_mode="Markdown"
+                )
+                payment_res = await process_live_ewallet_payment(
+                    task_id=task_id,
+                    amount=amount,
+                    ewallet_pin=ewallet_pin,
+                    irctc_user=irctc_user
+                )
+                if payment_res.get("success"):
+                    verif_str = f"Official IRCTC eWallet Auto-Debit (`{payment_res.get('transaction_id')}`)"
 
         elif pay_mode == "UPI / Instant Pay":
             upi_id = task.get("upi_id") or "Registered UPI App"
@@ -322,24 +344,45 @@ class BackgroundBookingWorker:
 
         else:
             # Credit / Debit Card Flow
-            async def otp_prompt_callback(chat_id, card_mask, amount, timeout_sec):
-                prompt_text = (
-                    f"🔐 *BANK 3D-SECURE OTP REQUIRED*\n\n"
-                    f"• *Card:* `{card_mask}`\n"
-                    f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
-                    f"• *Time Limit:* `{timeout_sec}` seconds\n\n"
-                    f"📲 *Please enter the OTP sent to your registered mobile phone directly in this chat:* 👇"
-                )
-                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, parse_mode="Markdown")
-
+            from live_payment_service import create_live_card_payment_session
             card_data = await storage.get_decrypted_card(task.get("telegram_id"))
+            card_session = await create_live_card_payment_session(
+                task_id=task_id,
+                amount=amount + 17.70,
+                card_info=card_data
+            )
+
+            async def otp_prompt_callback(chat_id, card_mask, amount, timeout_sec):
+                gateway_title = "⚡ [LIVE 3D-SECURE BANK CHECKOUT INITIATED]" if card_session.get("is_live_gateway") else "🔐 [BANK 3D-SECURE ACS GATEWAY ACTIVE]"
+                gateway_name = card_session.get("gateway", "Direct Bank 3D-Secure ACS")
+                link_text = ""
+                buttons = []
+                if card_session.get("payment_link"):
+                    link_text = f"\n🔗 *Bank Gateway Link:* [Click Here to Authenticate Live]({card_session['payment_link']})\n"
+                    buttons.append([InlineKeyboardButton("💳 Open Bank 3D-Secure Page", url=card_session["payment_link"])])
+
+                buttons.append([InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")])
+                keyboard = InlineKeyboardMarkup(buttons)
+
+                prompt_text = (
+                    f"{gateway_title}\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• *Card:* `{card_mask}`\n"
+                    f"• *Gateway:* `{gateway_name}`\n"
+                    f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
+                    f"• *Time Limit:* `{timeout_sec}` seconds\n"
+                    f"{link_text}\n"
+                    f"📲 *Please enter the 3D-Secure Bank OTP sent to your registered mobile phone directly in this chat:* 👇"
+                )
+                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard, parse_mode="Markdown")
+
             payment_res = await self.service.request_card_payment_and_wait_for_otp(
                 chat_id=chat_id,
                 amount=amount,
                 prompt_callback=otp_prompt_callback,
                 card_info=card_data
             )
-            verif_str = f"Bank 3D-Secure OTP `{payment_res.get('otp')}`"
+            verif_str = f"Live 3D-Secure Card Payment Verified (OTP `{payment_res.get('otp')}`)"
 
         if not payment_res.get("success"):
             await self.bot_app.bot.send_message(
