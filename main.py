@@ -184,6 +184,8 @@ async def run_bot():
     app.add_handler(MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking))
     app.add_handler(CommandHandler("account", bot.cmd_account))
     app.add_handler(CommandHandler("reset_account", bot.cmd_reset_account))
+    app.add_handler(CommandHandler("upi", bot.cmd_upi))
+    app.add_handler(CommandHandler("reset_upi", bot.cmd_reset_upi))
     app.add_handler(CommandHandler("card", bot.cmd_card))
     app.add_handler(CommandHandler("payment", bot.cmd_card))
     app.add_handler(CommandHandler("reset_card", bot.cmd_reset_card))

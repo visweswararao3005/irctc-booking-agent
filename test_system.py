@@ -357,6 +357,49 @@ async def run_tests():
     print(f"   • Strike Polling:  {int_strike}s ({desc_strike})")
     print("✅ Ticket Opening Estimation & Dynamic Polling Rate Engine: PASSED")
 
+    # 13. Test Smart UPI & Mobile Number Detection
+    print("\n[Test 13] Testing Smart UPI & Mobile Number Detection (Valid vs Invalid)...")
+    from bot import validate_and_normalize_upi
+
+    # Case A: Full VPA handle
+    v1, norm1, app1, err1 = validate_and_normalize_upi("visweswararao@paytm")
+    assert v1 is True and norm1 == "visweswararao@paytm" and "Paytm" in app1, f"Failed VPA 1: {norm1}"
+
+    v2, norm2, app2, err2 = validate_and_normalize_upi("9876543210@ybl")
+    assert v2 is True and "PhonePe" in app2, f"Failed PhonePe VPA: {app2}"
+
+    v3, norm3, app3, err3 = validate_and_normalize_upi("balaji@okaxis")
+    assert v3 is True and "Google Pay" in app3, f"Failed GPay VPA: {app3}"
+
+    # Case B: Plain 10-digit mobile number
+    v4, norm4, app4, err4 = validate_and_normalize_upi("9876543210")
+    assert v4 is True and norm4 == "9876543210@upi" and "NPCI" in app4, f"Failed 10-digit: {norm4}"
+
+    # Case C: Mobile number with country code +91 and spaces
+    v5, norm5, app5, err5 = validate_and_normalize_upi("+91 98765 43210")
+    assert v5 is True and norm5 == "9876543210@upi", f"Failed +91 normalization: {norm5}"
+
+    # Case D: Invalid Indian telecom prefix (starts with 1)
+    v6, norm6, app6, err6 = validate_and_normalize_upi("1234567890")
+    assert v6 is False and "start with 6, 7, 8, or 9" in err6, f"Failed telecom prefix check: {err6}"
+
+    # Case E: Incorrect length (9 digits)
+    v7, norm7, app7, err7 = validate_and_normalize_upi("987654321")
+    assert v7 is False and "9 digits" in err7, f"Failed length check: {err7}"
+
+    # Case F: Malformed VPA
+    v8, norm8, app8, err8 = validate_and_normalize_upi("invalid@@upi")
+    assert v8 is False and "one '@'" in err8, f"Failed double-@ check: {err8}"
+
+    print(f"   • Full VPA Detected:     {norm1} -> {app1} (Valid: {v1})")
+    print(f"   • PhonePe VPA Detected:  {norm2} -> {app2} (Valid: {v2})")
+    print(f"   • Google Pay Detected:   {norm3} -> {app3} (Valid: {v3})")
+    print(f"   • 10-digit Mobile Norm:  {norm4} -> {app4} (Valid: {v4})")
+    print(f"   • +91 Number Norm:       {norm5} -> Cleaned (Valid: {v5})")
+    print(f"   • Bad Prefix '123...':   Rejected cleanly: '{err6}' (Valid: {v6})")
+    print(f"   • 9-digit '987...':      Rejected cleanly: '{err7}' (Valid: {v7})")
+    print("✅ Smart UPI & Mobile Number Detection Engine: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)
