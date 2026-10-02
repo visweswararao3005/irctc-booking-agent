@@ -118,6 +118,9 @@ async def run_bot():
             CommandHandler("cancel", bot.cancel_booking),
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.start_booking),
+            CommandHandler("info", bot.cmd_info),
+            CommandHandler("task", bot.cmd_tasks),
+            CommandHandler("tasks", bot.cmd_tasks),
             MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
         ],
         allow_reentry=True
@@ -137,6 +140,9 @@ async def run_bot():
             CommandHandler("cancel", bot.cancel_booking),
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.start_booking),
+            CommandHandler("info", bot.cmd_info),
+            CommandHandler("task", bot.cmd_tasks),
+            CommandHandler("tasks", bot.cmd_tasks),
         ],
         allow_reentry=True
     )
@@ -157,6 +163,9 @@ async def run_bot():
             CommandHandler("cancel", bot.cancel_booking),
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.start_booking),
+            CommandHandler("info", bot.cmd_info),
+            CommandHandler("task", bot.cmd_tasks),
+            CommandHandler("tasks", bot.cmd_tasks),
         ],
         allow_reentry=True
     )
@@ -167,6 +176,10 @@ async def run_bot():
     app.add_handler(card_conv)
     app.add_handler(CommandHandler("start", bot.start_booking))
     app.add_handler(CommandHandler("book", bot.start_booking))
+    app.add_handler(CommandHandler("info", bot.cmd_info))
+    app.add_handler(CommandHandler("help", bot.cmd_info))
+    app.add_handler(CommandHandler("task", bot.cmd_tasks))
+    app.add_handler(CommandHandler("tasks", bot.cmd_tasks))
     app.add_handler(MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking))
     app.add_handler(CommandHandler("account", bot.cmd_account))
     app.add_handler(CommandHandler("reset_account", bot.cmd_reset_account))

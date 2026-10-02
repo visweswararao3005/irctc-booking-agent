@@ -253,6 +253,44 @@ async def run_tests():
     print(f"   • Released Watchdog State: {sniper_avail_released['status']} (is_available={sniper_avail_released['is_available']})")
     print("✅ Seat Sniper Watchdog & Release Trigger: PASSED")
 
+    # 9. Test /info and /tasks Handlers & User Task Isolation
+    print("\n[Test 9] Testing /info and /tasks Handlers & User Task Isolation...")
+    # Add active task for test user
+    t_id = await storage.add_task({
+        "telegram_id": test_user_id,
+        "telegram_chat_id": test_user_id,
+        "train_number": "16022",
+        "train_name": "KAVERI EXP",
+        "coach_class": "SL",
+        "journey_date": "2026-10-20",
+        "source_stn": "SBC",
+        "dest_stn": "MAS",
+        "status": "MONITORING",
+        "booking_mode": "SNIPER",
+        "passengers": [{"name": "Balaji P", "age": 28, "gender": "M", "berth": "Lower Berth (LB)"}]
+    })
+
+    user_tasks = await storage.get_user_active_tasks(test_user_id)
+    assert len(user_tasks) >= 1, "User active task not found"
+    assert any(t["task_id"] == t_id for t in user_tasks), f"Task {t_id} missing in user active tasks"
+    print(f"   • User Active Tasks found: {len(user_tasks)} (Task {t_id})")
+
+    # Ensure another user sees 0 tasks
+    other_user_tasks = await storage.get_user_active_tasks(123456789)
+    assert len(other_user_tasks) == 0, "Task leaking across different users!"
+    print("   • Multi-User Task Privacy Isolation: Verified (0 tasks leaked)")
+
+    # Cleanup task
+    await storage.delete_task(t_id)
+    after_cleanup = await storage.get_user_active_tasks(test_user_id)
+    assert not any(t["task_id"] == t_id for t in after_cleanup), "Task not purged"
+
+    # Verify cmd_info and cmd_tasks are imported from bot
+    import bot
+    assert callable(bot.cmd_info), "bot.cmd_info is not callable"
+    assert callable(bot.cmd_tasks), "bot.cmd_tasks is not callable"
+    print("✅ /info and /tasks Handlers & Task Privacy: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

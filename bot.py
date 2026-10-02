@@ -219,6 +219,116 @@ async def handle_set_card_name(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return ConversationHandler.END
 
+# ----------------- /info and /tasks Command Handlers -----------------
+
+async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Explains how the IRCTC AI Booking Agent & Seat Sniper works end-to-end with full details."""
+    info_text = (
+        "🤖 *IRCTC AI BOOKING AGENT — END-TO-END SYSTEM GUIDE*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎯 *How This Bot Works (Step-by-Step):*\n\n"
+        "1️⃣ *Live Train Discovery & Departure Sorting:*\n"
+        "• Send `/start`, `/book`, or your route like `KJM-MAS`.\n"
+        "• The agent queries live Indian Railways network feeds directly.\n"
+        "• Trains running on your selected travel date are sorted chronologically by earliest departure time.\n\n"
+        "2️⃣ *Official Railway Quotas & Live Fares:*\n"
+        "• For each train, the bot parses official reserved coach quotas (Field 62) allocated by Indian Railways (e.g. `SL: Quota 134 Berths`, `3A: Quota 300 Berths`).\n"
+        "• Live fares (Field 41) are fetched directly with zero synthetic pricing.\n\n"
+        "3️⃣ *Seat Availability Sniper (Chart Watchdog):*\n"
+        "• *Why regular Waiting List (WL) is skipped:* Indian Railways rules prohibit boarding with unconfirmed WL e-tickets.\n"
+        "• *The Charting Window:* CRIS prepares the 1st reservation chart ~4 hours before train departure.\n"
+        "• *Berth Release:* Unutilized quotas (defense, foreign tourist, VIP/HO, leftover Tatkal) release into the public pool as Current Availability (`CURR_AVBL`).\n"
+        "• *The Sniper Strike:* The bot maintains a 24/7 Watchdog on your train. The second unutilized berths hit the system, you get an immediate strike alert to secure the seat in 1 click!\n\n"
+        "4️⃣ *100% Truth & Zero Fake Info Guarantee:*\n"
+        "• Official 10-digit government PNRs are cryptographically managed and issued only by CRIS/IRCTC upon payment.\n"
+        "• The agent never generates fake PNRs or simulated WL numbers.\n\n"
+        "5️⃣ *Bank-Grade Security (AES-256):*\n"
+        "• All sensitive credentials, payment cards, and UPI IDs are encrypted with AES-256 Fernet for your chat only.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📋 *All Available Commands:*\n"
+        "• `/start` or `/book` — Search trains & start booking\n"
+        "• `/tasks` (or `/task`) — View all open monitoring tasks in progress\n"
+        "• `/info` — View this end-to-end operational guide\n"
+        "• `/account` — Check or update your linked IRCTC ID\n"
+        "• `/card` — Check or update your encrypted payment card\n"
+        "• `/cancel` — Cancel any active booking conversation"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🚆 Search Trains Now", callback_data="info_start_booking"),
+            InlineKeyboardButton("📋 View Active Tasks", callback_data="info_view_tasks")
+        ]
+    ])
+    effective_msg = update.effective_message
+    if effective_msg:
+        await effective_msg.reply_text(info_text, reply_markup=keyboard, parse_mode="Markdown")
+
+async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays all open seat monitoring / sniper tasks currently in progress for this user."""
+    tg_id = update.effective_user.id
+    active_tasks = await storage.get_user_active_tasks(tg_id)
+    effective_msg = update.effective_message
+
+    if not effective_msg:
+        return
+
+    if not active_tasks:
+        no_tasks_msg = (
+            "📋 *ACTIVE SEAT SNIPER TASKS*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "ℹ️ You currently have *no active monitoring tasks* in progress.\n\n"
+            "When you search for a train and select *🎯 ACTIVATE SEAT SNIPER*, "
+            "the 24/7 Watchdog will continuously monitor the train and appear here!\n\n"
+            "👉 Send `/start` or `/book` to search trains and activate a sniper."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚆 Start New Booking", callback_data="info_start_booking")]
+        ])
+        await effective_msg.reply_text(no_tasks_msg, reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    header_msg = (
+        f"📋 *ACTIVE SEAT SNIPER TASKS ({len(active_tasks)} in progress)*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "The Watchdog is actively monitoring the trains below.\n"
+        "When seats release at chart preparation, you will be notified immediately!"
+    )
+    await effective_msg.reply_text(header_msg, parse_mode="Markdown")
+
+    for task in active_tasks:
+        task_id = task["task_id"]
+        t_num = task["train_number"]
+        t_name = task.get("train_name", "EXP")
+        c_class = task["coach_class"]
+        src = task["source_stn"]
+        dst = task["dest_stn"]
+        date = task["journey_date"]
+        attempts = task.get("attempts_count", 0)
+        last_chk = task.get("last_checked") or "Pending first check"
+        latest_stat = task.get("latest_status") or "WL / Awaiting Chart Release"
+        pay_mode = task.get("payment_method", "Instant Pay")
+        p_info = task.get("passengers", [{}])[0]
+        p_name = p_info.get("name", "Passenger")
+
+        task_card = (
+            f"🎯 *Task ID:* `{task_id}`\n"
+            f"• *Train:* `{t_num}` - {t_name} (*{c_class}*)\n"
+            f"• *Route:* {src} ➔ {dst} ({date})\n"
+            f"• *Passenger:* {p_name} ({p_info.get('berth', 'No Pref')})\n"
+            f"• *Current Status:* `{latest_stat}`\n"
+            f"• *Target:* Confirmed / Current Available (`CURR_AVBL`)\n"
+            f"• *Payment Mode:* {pay_mode}\n"
+            f"• *Checks Performed:* `{attempts}` (Last: `{last_chk}`)\n\n"
+            "👉 Tap below to trigger a live check or cancel monitoring:"
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Try Now", callback_data=f"try_{task_id}"),
+                InlineKeyboardButton("❌ Cancel Monitoring", callback_data=f"cancel_{task_id}")
+            ]
+        ])
+        await effective_msg.reply_text(task_card, reply_markup=kb, parse_mode="Markdown")
+
 # Helper command checkers
 def is_back_command(text: str) -> bool:
     t = text.strip().lower()
@@ -243,6 +353,9 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         f"🚆 *Welcome to the IRCTC AI Booking Agent, {safe_name}!*\n\n"
         "I will help you search real live trains, check coach availability with fares, "
         "and continuously monitor Waiting List tickets with auto-booking.\n\n"
+        "💡 *Quick Commands:*\n"
+        "• `/info` — Detailed guide on how this agent & sniper works\n"
+        "• `/tasks` — View and manage open seat sniper tasks in progress\n\n"
         "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n"
         "*(Example: `KJM-MAS` or `MAS-NLR`)*"
     )
@@ -1287,6 +1400,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         irctc_svc.provide_otp(c_id, "UPI_APPROVED_BY_USER")
         await query.answer("Payment approval received! Generating confirmed ticket...", show_alert=True)
         await query.edit_message_text("✅ *Payment Approval Confirmed!* Generating government PNR and ticket PDF...", parse_mode="Markdown")
+    elif data == "info_start_booking":
+        await query.message.reply_text(
+            "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n*(Example: `KJM-MAS` or `MAS-NLR`)*",
+            parse_mode="Markdown"
+        )
+    elif data == "info_view_tasks":
+        return await cmd_tasks(update, context)
 
 # ----------------- Global OTP Interceptor -----------------
 
