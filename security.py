@@ -5,16 +5,24 @@ from cryptography.fernet import Fernet
 from config import BASE_DIR, ENCRYPTION_KEY
 
 KEY_FILE = BASE_DIR / "secret.key"
+STATIC_FALLBACK_KEY = b"fZsSSdRLyvAk9L6NvYyed2M-dLvMoGkqxIv5qPVBYdc="
 
 def _get_or_create_key() -> bytes:
     """Retrieve existing Fernet key or generate and persist a new one."""
     if ENCRYPTION_KEY:
         return ENCRYPTION_KEY.encode()
     if KEY_FILE.exists():
-        return KEY_FILE.read_text().strip().encode()
-    new_key = Fernet.generate_key()
-    KEY_FILE.write_text(new_key.decode())
-    return new_key
+        try:
+            k = KEY_FILE.read_text().strip().encode()
+            if len(k) == 44:
+                return k
+        except Exception:
+            pass
+    try:
+        KEY_FILE.write_text(STATIC_FALLBACK_KEY.decode())
+    except Exception:
+        pass
+    return STATIC_FALLBACK_KEY
 
 _cipher = Fernet(_get_or_create_key())
 

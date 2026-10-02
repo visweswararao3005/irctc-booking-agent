@@ -181,6 +181,9 @@ async def run_bot():
     app.add_handler(CommandHandler("help", bot.cmd_info))
     app.add_handler(CommandHandler("task", bot.cmd_tasks))
     app.add_handler(CommandHandler("tasks", bot.cmd_tasks))
+    app.add_handler(CommandHandler("profile", bot.cmd_profile))
+    app.add_handler(CommandHandler("passenger", bot.cmd_profile))
+    app.add_handler(CommandHandler("reset_profile", bot.cmd_reset_profile))
     app.add_handler(MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking))
     app.add_handler(CommandHandler("account", bot.cmd_account))
     app.add_handler(CommandHandler("reset_account", bot.cmd_reset_account))
@@ -196,7 +199,9 @@ async def run_bot():
 
     async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         err_str = str(context.error) if context.error else ""
-        print(f"[ERROR] Exception while handling update: {context.error}")
+        import traceback
+        tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__)) if context.error else err_str
+        print(f"[ERROR] Exception while handling update:\n{tb}")
 
         # Ignore benign Telegram network or callback-already-answered/message-not-modified errors
         if any(ignorable in err_str.lower() for ignorable in ["message is not modified", "query is too old", "query id is invalid", "query has already been answered"]):
@@ -204,6 +209,9 @@ async def run_bot():
 
         if isinstance(update, Update) and update.effective_message:
             try:
+                # If error is a markdown parsing issue, do not send scary crash prompt
+                if "can't parse entities" in err_str.lower():
+                    return
                 await update.effective_message.reply_text(
                     "⚠️ An unexpected issue occurred. Please send /start to continue.",
                     parse_mode=None

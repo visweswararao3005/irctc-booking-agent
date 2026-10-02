@@ -409,6 +409,77 @@ async def run_tests():
     print(f"   • 9-digit '987...':      Rejected cleanly: '{err7}' (Valid: {v7})")
     print("✅ Smart UPI & Mobile Number Detection Engine: PASSED")
 
+    # 14. Test cmd_tasks, cmd_profile and safe_reply Exception-Proof Fallback
+    print("\n[Test 14] Testing cmd_tasks, cmd_profile & safe_reply Error-Proof Fallback...")
+    from bot import cmd_tasks, cmd_profile, safe_reply
+
+    # Mock Message with entity error simulation
+    class MockTelegramMessage:
+        def __init__(self, fail_markdown=False):
+            self.fail_markdown = fail_markdown
+            self.sent_texts = []
+            self.sent_modes = []
+
+        async def reply_text(self, text, reply_markup=None, parse_mode=None):
+            if self.fail_markdown and parse_mode == "Markdown":
+                raise Exception("telegram.error.BadRequest: Can't parse entities: Can't find end of italic entity")
+            self.sent_texts.append(text)
+            self.sent_modes.append(parse_mode)
+            return self
+
+    # Case A: safe_reply fallback
+    failing_msg = MockTelegramMessage(fail_markdown=True)
+    res = await safe_reply(failing_msg, "Test *bold* _italic `code`", parse_mode="Markdown")
+    assert res is not None, "safe_reply failed to return message"
+    assert failing_msg.sent_modes[-1] is None, "Did not fallback to parse_mode=None"
+    assert "*" not in failing_msg.sent_texts[-1], "Did not clean markdown symbols in fallback"
+
+    # Case B: cmd_tasks with active task (verifies last_chk is defined)
+    test_user_id = 999999
+    sample_task_id = await storage.add_task({
+        "telegram_id": test_user_id,
+        "telegram_chat_id": test_user_id,
+        "train_number": "12601",
+        "train_name": "KAVERI EXP",
+        "coach_class": "SL",
+        "source_stn": "MAS",
+        "dest_stn": "SBC",
+        "journey_date": "2026-10-05",
+        "payment_method": "UPI / Instant Pay",
+        "latest_status": "RLWL 288 / WL 135",
+        "attempts_count": 3,
+        "last_checked": "22:45:00",
+        "passengers": [{"name": "Balaji", "berth": "LB"}]
+    })
+
+    mock_update = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": MockTelegramMessage()
+    })()
+    await cmd_tasks(mock_update, None)
+    await storage.delete_task(sample_task_id)
+    assert len(mock_update.effective_message.sent_texts) >= 1, "cmd_tasks produced no messages"
+    assert any("Task ID" in t for t in mock_update.effective_message.sent_texts), "cmd_tasks did not output task card"
+
+    # Case C: cmd_profile
+    await storage.save_passenger_profile(test_user_id, "Balaji", 25, "Male", "Lower Berth (LB)")
+    await storage.save_user_credentials(test_user_id, "balaji_irctc", "secretpass")
+    await storage.save_user_upi(test_user_id, "balaji@okaxis")
+
+    prof_update = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": MockTelegramMessage()
+    })()
+    await cmd_profile(prof_update, None)
+    assert len(prof_update.effective_message.sent_texts) >= 1, "cmd_profile produced no messages"
+    assert "YOUR SAVED BOOKING PROFILE" in prof_update.effective_message.sent_texts[0], "cmd_profile header missing"
+    assert "balaji_irctc" in prof_update.effective_message.sent_texts[0], "IRCTC username missing in profile"
+
+    print("   • safe_reply Fallback on Telegram Markdown Error: PASSED (Zero crashes)")
+    print("   • cmd_tasks with Live Active Task & last_chk:    PASSED (Zero NameError)")
+    print("   • cmd_profile Display & 1-Click Visibility:      PASSED")
+    print("✅ Telegram Crash-Proof Messaging & Profile Engine: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

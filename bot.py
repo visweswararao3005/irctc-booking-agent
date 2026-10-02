@@ -49,6 +49,25 @@ STATE_SET_USER, STATE_SET_PASS = range(18, 20)
 STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(20, 24)
 
 
+# ----------------- Safe Messaging Helper -----------------
+
+async def safe_reply(msg_target, text: str, reply_markup=None, parse_mode: str = "Markdown"):
+    """
+    Safely send a reply, automatically falling back to unformatted plain text
+    if Telegram raises an entity parsing error.
+    """
+    if not msg_target:
+        return None
+    try:
+        return await msg_target.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as e:
+        err = str(e).lower()
+        if "can't parse entities" in err or "entity" in err or "badrequest" in err:
+            clean = text.replace("*", "").replace("`", "").replace("_", "")
+            return await msg_target.reply_text(clean, reply_markup=reply_markup, parse_mode=None)
+        raise
+
+
 # ----------------- Account Management Handlers -----------------
 
 async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,7 +419,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚆 Start New Booking", callback_data="info_start_booking")]
         ])
-        await effective_msg.reply_text(no_tasks_msg, reply_markup=keyboard, parse_mode="Markdown")
+        await safe_reply(effective_msg, no_tasks_msg, reply_markup=keyboard, parse_mode="Markdown")
         return
 
     header_msg = (
@@ -409,7 +428,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "The Watchdog is actively monitoring the trains below.\n"
         "When seats release at chart preparation, you will be notified immediately!"
     )
-    await effective_msg.reply_text(header_msg, parse_mode="Markdown")
+    await safe_reply(effective_msg, header_msg, parse_mode="Markdown")
 
     for task in active_tasks:
         task_id = task["task_id"]
@@ -420,6 +439,8 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dst = task["dest_stn"]
         date = task["journey_date"]
         attempts = task.get("attempts_count", 0)
+        last_chk = task.get("last_checked", "Just started")
+
         # Auto-refresh outdated or synthetic status to authentic live PRS waitlist
         if not task.get("latest_status") or "GNWL 26" in str(task.get("latest_status")):
             try:
@@ -467,7 +488,71 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("❌ Cancel Monitoring", callback_data=f"cancel_{task_id}")
             ]
         ])
-        await effective_msg.reply_text(task_card, reply_markup=kb, parse_mode="Markdown")
+        await safe_reply(effective_msg, task_card, reply_markup=kb, parse_mode="Markdown")
+
+async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View saved passenger profile, IRCTC username, and linked payment method."""
+    tg_id = update.effective_user.id
+    passenger = await storage.get_passenger_profile(tg_id)
+    irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
+    upi_id = await storage.get_decrypted_upi(tg_id)
+    card = await storage.get_decrypted_card(tg_id)
+
+    p_line = (
+        f"• *Default Passenger:* {passenger['name']} ({passenger['age']} yrs, {passenger['gender']}, {passenger.get('berth', 'No Preference')})\n"
+        if passenger and passenger.get("name")
+        else "• *Default Passenger:* Not saved yet\n"
+    )
+
+    acc_line = (
+        f"• *IRCTC Account:* `{irctc_user}` (Encrypted & linked)\n"
+        if irctc_user
+        else "• *IRCTC Account:* Not linked yet\n"
+    )
+
+    if upi_id:
+        pay_line = f"• *Linked Payment:* `UPI` (`{upi_id}`)\n"
+    elif card and card.get("card_number"):
+        c_num = card["card_number"]
+        mask = f"**** **** **** {c_num[-4:]}"
+        pay_line = f"• *Linked Payment:* `Card` ({mask})\n"
+    else:
+        pay_line = "• *Linked Payment:* Not linked yet\n"
+
+    msg = (
+        "👤 *YOUR SAVED BOOKING PROFILE*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{p_line}"
+        f"{acc_line}"
+        f"{pay_line}\n"
+        "✨ *1-Click Booking Advantage:*\n"
+        "When these details are saved, the agent will **NEVER** ask you for them again during booking! You can review and confirm tickets in 1 tap.\n\n"
+        "👉 Need to update or reset any details? Use the buttons below:"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚆 Start Booking", callback_data="info_start_booking")],
+        [
+            InlineKeyboardButton("🔄 Reset Passenger", callback_data="reset_profile_passenger"),
+            InlineKeyboardButton("🔐 Reset IRCTC", callback_data="reset_profile_irctc"),
+            InlineKeyboardButton("📱 Reset UPI", callback_data="reset_profile_upi")
+        ]
+    ])
+    await safe_reply(update.effective_message, msg, reply_markup=kb, parse_mode="Markdown")
+
+async def cmd_reset_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset all stored user data (passenger, IRCTC, payment) for this chat."""
+    tg_id = update.effective_user.id
+    await storage.reset_passenger_profile(tg_id)
+    await storage.reset_user_credentials(tg_id)
+    await storage.reset_user_upi(tg_id)
+    await storage.reset_user_card(tg_id)
+    await update.effective_message.reply_text(
+        "🗑️ *All Saved Profile Data Cleared!*\n\n"
+        "Your saved passenger, IRCTC login credentials, and payment methods have been removed for this chat.\n"
+        "Send /start to begin fresh anytime!",
+        parse_mode="Markdown"
+    )
 
 # Helper command checkers
 def is_back_command(text: str) -> bool:
@@ -1141,19 +1226,19 @@ async def handle_passenger_choice(update: Update, context: ContextTypes.DEFAULT_
         )
         return STATE_PAYMENT_SELECT
 
-    if "Use Saved" in text or "✅" in text:
-        saved = context.user_data.get("saved_profile") or await storage.get_passenger_profile(update.effective_user.id)
-        if saved:
-            context.user_data["p_name"] = saved["name"]
-            context.user_data["p_age"] = saved["age"]
-            context.user_data["p_gender"] = saved["gender"]
-            context.user_data["p_berth"] = saved.get("berth", "No Preference")
-            await update.message.reply_text(
-                f"✅ Selected Saved Passenger: *{saved['name']}* ({saved['age']} yrs, {saved['gender']}, {saved.get('berth', 'No Preference')})",
-                reply_markup=ReplyKeyboardRemove(),
-                parse_mode="Markdown"
-            )
-            return await check_credentials_and_next(update, context)
+    saved = context.user_data.get("saved_profile") or await storage.get_passenger_profile(update.effective_user.id)
+    if saved and ("use saved" in text.lower() or "✅" in text or "⚡" in text or saved.get("name", "").lower() in text.lower()):
+        context.user_data["p_name"] = saved["name"]
+        context.user_data["p_age"] = saved["age"]
+        context.user_data["p_gender"] = saved["gender"]
+        context.user_data["p_berth"] = saved.get("berth", "No Preference")
+        await safe_reply(
+            update.message,
+            f"✅ Using Saved Passenger: *{saved['name']}* ({saved['age']} yrs, {saved['gender']}, {saved.get('berth', 'No Preference')})",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        return await check_credentials_and_next(update, context)
 
     # User chose "➕ Enter New Passenger Details"
     await update.message.reply_text(
@@ -1282,6 +1367,11 @@ async def handle_passenger_berth(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data.get("p_gender", "M"),
         context.user_data.get("p_berth", "No Preference")
     )
+    await safe_reply(
+        update.message,
+        f"✅ Passenger profile for *{context.user_data.get('p_name')}* saved for future 1-click bookings!",
+        parse_mode="Markdown"
+    )
 
     return await check_credentials_and_next(update, context)
 
@@ -1290,7 +1380,8 @@ async def check_credentials_and_next(update: Update, context: ContextTypes.DEFAU
     username, password = await storage.get_decrypted_credentials(tg_id)
 
     if not username:
-        await update.message.reply_text(
+        await safe_reply(
+            update.message,
             "⚠️ *IRCTC Account Required*\n\n"
             "You haven't linked your IRCTC ID to this Telegram chat yet.\n"
             "Please enter your *IRCTC Username* now:\n"
@@ -1312,7 +1403,8 @@ async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     if pay_mode == "Credit / Debit Card":
         card = await storage.get_decrypted_card(tg_id)
         if not card or not card.get("card_number"):
-            await update.message.reply_text(
+            await safe_reply(
+                update.message,
                 "💳 *Payment Card Required for Card Checkout*\n\n"
                 "You haven't linked a payment card to this chat yet.\n"
                 "Please enter your *16-Digit Card Number* now:\n"
@@ -1328,7 +1420,8 @@ async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     elif pay_mode == "UPI / Instant Pay":
         upi = await storage.get_decrypted_upi(tg_id)
         if not upi:
-            await update.message.reply_text(
+            await safe_reply(
+                update.message,
                 "📱 *UPI ID / Mobile Number Required*\n\n"
                 "Please enter your **UPI ID / VPA** or registered 10-digit mobile number:\n"
                 "*(Examples: `9876543210@paytm`, `username@oksbi`, `name@ybl`)*\n\n"
@@ -1453,20 +1546,20 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')}\n"
         f"• *Route:* `{u['source']}` ➔ `{u['dest']}`\n"
         f"• *Date:* `{u['date']}`\n"
-        f"• *Class:* `{u['coach_class']}` ({u.get('class_status')})\n"
+        f"• *Class:* `{u['coach_class']}` ({u.get('class_status', '')})\n"
         f"• *Fare:* `₹{int(u['fare'])}` (+ IRCTC fee)\n"
         f"• *Passenger:* {u['p_name']}, Age {u['p_age']} ({u['p_gender']})\n"
         f"• *Berth:* {u['p_berth']}\n"
         f"{payment_line}\n"
         f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
-        f"  _({open_est['chart_rule_note']})_\n"
+        f"  • *Chart Rule:* {open_est['chart_rule_note']}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🎯 *CHOOSE EXECUTION MODE:*\n\n"
         "1️⃣ *🎯 SEAT AVAILABILITY SNIPER* (Recommended)\n"
-        "   _Never books Waiting List! Continually monitors the train 24/7._\n"
-        "   _When charting occurs and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly!_\n\n"
+        "   • Never books Waiting List! Continually monitors the train 24/7.\n"
+        "   • When charting occurs and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly!\n\n"
         "2️⃣ *⚡ BOOK NOW*\n"
-        "   _Attempts immediate live booking right away._\n\n"
+        "   • Attempts immediate live booking right away.\n\n"
         "👉 Tap an option below:"
     )
     confirm_kb = [
@@ -1474,7 +1567,8 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         ["⚡ BOOK NOW (Instant Checkout)"],
         ["⬅️ Back", "❌ Cancel"]
     ]
-    await update.message.reply_text(
+    await safe_reply(
+        update.message,
         summary,
         reply_markup=ReplyKeyboardMarkup(confirm_kb, resize_keyboard=True),
         parse_mode="Markdown"
@@ -1491,7 +1585,8 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ["Side Upper (SU)", "No Preference"],
             ["⬅️ Back", "❌ Cancel"]
         ]
-        await update.message.reply_text(
+        await safe_reply(
+            update.message,
             "Select *Berth Preference*:",
             reply_markup=ReplyKeyboardMarkup(berth_keyboard, resize_keyboard=True),
             parse_mode="Markdown"
@@ -1558,7 +1653,8 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     task_id = await storage.add_task(task_data)
 
     if booking_mode == "INSTANT" and avail["is_available"]:
-        await update.message.reply_text(
+        await safe_reply(
+            update.message,
             "⚡ *Launching Instant Booking & Payment Checkout...*",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
@@ -1569,7 +1665,8 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         # Sniper Mode Activated
         # 1. First remove the custom reply keyboard cleanly from the user's screen
-        await update.message.reply_text(
+        await safe_reply(
+            update.message,
             "🎯 *Seat Sniper activated! Initializing live reservation watchdog...*",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
@@ -1579,7 +1676,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             watchdog_mode_info = (
                 f"• *Watchdog Start Time:* `{open_est['watchdog_start_time']} IST`\n"
                 f"• *Monitoring Mode:* 💤 `SCHEDULED SLEEP`\n"
-                f"  _(Watchdog is dormant; zero 15-min polling spam. Active looping begins 1 hr before chart prep)_\n"
+                f"  • *Schedule Note:* Dormant sleep; zero 15-min polling spam. Active looping begins 1h before chart prep.\n"
             )
         else:
             watchdog_mode_info = (
@@ -1595,9 +1692,9 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"• *Route:* {u['source']} ➔ {u['dest']} ({u['date']})\n"
             f"• *Current Status:* `{avail['status']}`\n"
             f"• *Payment:* `{u.get('payment_method')}`{upi_display}\n"
-            f"• *Target:* Confirmed / Current Available Berths (CNF / CURR_AVBL)\n"
+            f"• *Target:* Confirmed / Current Available Berths (CNF / `CURR_AVBL`)\n"
             f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
-            f"  _({open_est['chart_rule_note']})_\n"
+            f"  • *Chart Rule:* {open_est['chart_rule_note']}\n"
             f"{watchdog_mode_info}\n"
             f"🛡️ *Dynamic Charting Watchdog Rules:*\n"
             f"• The agent will **NEVER** book a Waiting List (WL) ticket.\n"
@@ -1611,12 +1708,13 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 InlineKeyboardButton("❌ Cancel Monitoring", callback_data=f"cancel_{task_id}")
             ]
         ])
-        sent_msg = await update.message.reply_text(
+        sent_msg = await safe_reply(
+            update.message,
             initial_card,
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
-        if global_scheduler:
+        if global_scheduler and sent_msg:
             global_scheduler.status_message_ids[task_id] = sent_msg.message_id
 
     return ConversationHandler.END
@@ -1705,6 +1803,30 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
         return await cmd_tasks(update, context)
+
+    elif data == "reset_profile_passenger":
+        await storage.reset_passenger_profile(update.effective_user.id)
+        try:
+            await query.answer("Passenger profile reset!", show_alert=True)
+        except Exception:
+            pass
+        return await cmd_profile(update, context)
+
+    elif data == "reset_profile_irctc":
+        await storage.reset_user_credentials(update.effective_user.id)
+        try:
+            await query.answer("IRCTC credentials removed!", show_alert=True)
+        except Exception:
+            pass
+        return await cmd_profile(update, context)
+
+    elif data == "reset_profile_upi":
+        await storage.reset_user_upi(update.effective_user.id)
+        try:
+            await query.answer("UPI ID removed!", show_alert=True)
+        except Exception:
+            pass
+        return await cmd_profile(update, context)
 
     else:
         try:

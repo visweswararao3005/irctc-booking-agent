@@ -163,14 +163,14 @@ class BackgroundBookingWorker:
             quota_line = f"• *Class Quota:* `{avail.get('quota')} Berths`\n" if avail.get("quota") else ""
             chart_line = (
                 f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
-                f"  _({open_est['chart_rule_note']})_\n"
+                f"  • *Chart Rule:* {open_est['chart_rule_note']}\n"
             )
 
             if not is_active:
                 watchdog_mode_line = (
                     f"• *Watchdog Start Time:* `{open_est['watchdog_start_time']} IST`\n"
                     f"• *Monitoring Mode:* 💤 `SCHEDULED SLEEP`\n"
-                    f"  _(Watchdog dormant; zero 15-min spam. Active polling loop starts 1 hr before chart prep)_\n"
+                    f"  • *Schedule Note:* Dormant sleep; zero 15-min spam. Active polling loop starts 1 hr before chart prep.\n"
                 )
             else:
                 watchdog_mode_line = (
@@ -185,11 +185,11 @@ class BackgroundBookingWorker:
                 f"• *Route:* {source} ➔ {dest} ({date})\n"
                 f"{quota_line}"
                 f"• *Current Status:* `{avail['status']}`\n"
-                f"• *Target:* Confirmed / Current Available (CURR_AVBL)\n"
+                f"• *Target:* Confirmed / Current Available (`CURR_AVBL`)\n"
                 f"{chart_line}"
                 f"{watchdog_mode_line}"
                 f"• *Total Checks:* `{attempts}`\n\n"
-                f"🛡️ _Sniper is holding fire. It will NEVER book Waiting List._\n"
+                f"🛡️ *Sniper is holding fire. It will NEVER book Waiting List.*\n"
                 f"As chart preparation approaches (T-60m ➔ T-30m ➔ T-10m), the retry rate automatically accelerates to hit the exact spot when unutilized berths drop into the reservation pool!"
             )
             keyboard = self.get_monitoring_keyboard(task_id)
@@ -209,8 +209,22 @@ class BackgroundBookingWorker:
                     parse_mode="Markdown"
                 )
                 return
-            except TelegramError:
-                # If editing fails (e.g. message too old or text identical), send a fresh one
+            except TelegramError as te:
+                err_str = str(te).lower()
+                if "can't parse entities" in err_str:
+                    try:
+                        clean = text.replace("*", "").replace("`", "").replace("_", "")
+                        await self.bot_app.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=msg_id,
+                            text=clean,
+                            reply_markup=keyboard,
+                            parse_mode=None
+                        )
+                        return
+                    except Exception:
+                        pass
+                # If editing fails for other reasons (e.g. message too old), fall through to send fresh
                 pass
 
         try:
