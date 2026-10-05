@@ -1900,22 +1900,32 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception:
                 pass
 
-    elif data.startswith("approve_upi_"):
-        chat_id_str = data.replace("approve_upi_", "")
-        c_id = int(chat_id_str) if chat_id_str.isdigit() else update.effective_chat.id
-        irctc_svc.provide_otp(c_id, "UPI_APPROVED_BY_USER")
-        try:
-            await query.answer("Payment verified!", show_alert=True)
-        except Exception:
-            pass
-        try:
-            await query.edit_message_caption(
-                caption="✅ *Live Payment Verified!* Generating official government PNR and ticket PDF...",
-                parse_mode="Markdown"
-            )
-        except Exception:
+    elif data.startswith("check_pg_status_") or data.startswith("approve_upi_"):
+        from live_payment_service import check_live_gateway_payment_status
+        order_key = data.replace("check_pg_status_", "").replace("approve_upi_", "")
+        c_id = update.effective_chat.id
+
+        is_paid, pg_status, details = await check_live_gateway_payment_status(order_key)
+        if is_paid:
+            irctc_svc.provide_otp(c_id, f"PAID_PG_{order_key}")
             try:
-                await query.edit_message_text("✅ *Live Payment Verified!* Generating official government PNR and ticket PDF...", parse_mode="Markdown")
+                await query.answer("✅ Bank Payment Confirmed & Verified!", show_alert=True)
+            except Exception:
+                pass
+            try:
+                await query.edit_message_caption(
+                    caption="✅ *Live Bank Payment Confirmed!* Processing booking...",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+        else:
+            err_msg = details.get("error") if isinstance(details, dict) and "error" in details else f"Status: {pg_status}"
+            try:
+                await query.answer(
+                    f"❌ Bank payment not verified ({err_msg}). Please pay in your UPI app first or use official IRCTC.",
+                    show_alert=True
+                )
             except Exception:
                 pass
 

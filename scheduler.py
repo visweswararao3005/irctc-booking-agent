@@ -297,9 +297,33 @@ class BackgroundBookingWorker:
             upi_uri, txn_ref = generate_upi_intent_uri(total_amount, task_id)
             qr_code_url = generate_dynamic_qr_url(upi_uri, size=350)
 
+            order_ref = pg_res.get("order_id", txn_ref)
             async def upi_prompt_callback(chat_id, amount, timeout_sec):
-                gateway_mode = "⚡ [LIVE PAYMENT GATEWAY COLLECT DISPATCHED]" if pg_res.get("is_live_gateway") else "📲 [LIVE UPI INTENT & DYNAMIC QR READY]"
+                gateway_mode = "⚡ [LIVE PAYMENT GATEWAY COLLECT DISPATCHED]" if pg_res.get("is_live_gateway") else "📲 [DIRECT UPI INTENT & DYNAMIC QR READY]"
                 gateway_name = pg_res.get("gateway", "NPCI UPI Engine")
+                
+                if pg_res.get("is_live_gateway"):
+                    instructions = (
+                        "👉 **How to complete live payment:**\n"
+                        "1️⃣ **App Notification:** Open your UPI app (PhonePe / GPay / Paytm) and tap **Approve**.\n"
+                        "2️⃣ **Scan QR Code:** Or scan the dynamic QR code above with any UPI app.\n"
+                        "3️⃣ **Verify:** Tap **'🔄 Verify Bank Payment'** below once paid in your app."
+                    )
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Verify Bank Payment", callback_data=f"check_pg_status_{order_ref}")],
+                        [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
+                    ])
+                else:
+                    instructions = (
+                        "👉 **How to complete payment:**\n"
+                        "1️⃣ **Scan QR Code:** Scan the dynamic QR code above to transfer funds directly to merchant VPA.\n"
+                        "2️⃣ **Official IRCTC Settlement:** Because no automated merchant PG is linked to this bot, click below to book and pay directly on official IRCTC for genuine CRIS PNR issuance!"
+                    )
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔗 Book & Pay on Official IRCTC", url="https://www.irctc.co.in/nget/train-search")],
+                        [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
+                    ])
+
                 prompt_caption = (
                     f"{gateway_mode}\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -308,15 +332,8 @@ class BackgroundBookingWorker:
                     f"• *Gateway Engine:* `{gateway_name}`\n"
                     f"• *Time Limit:* `{timeout_sec}` seconds\n"
                     f"• *Reference ID:* `{txn_ref}`\n\n"
-                    "👉 **How to complete live payment:**\n"
-                    "1️⃣ **Scan QR Code:** Scan the dynamic QR code above with **PhonePe / Google Pay / Paytm**.\n"
-                    "2️⃣ **App Notification:** If you requested collect, open your UPI app and tap **Approve**.\n"
-                    "3️⃣ **Click Below:** Once paid, tap **'✅ I Have Paid / Approved'** or reply with your **12-digit Bank UTR Number**!"
+                    f"{instructions}"
                 )
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ I Have Paid / Approved", callback_data=f"approve_upi_{chat_id}")],
-                    [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
-                ])
                 try:
                     # Send Dynamic QR Photo to chat
                     await self.bot_app.bot.send_photo(

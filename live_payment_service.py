@@ -158,6 +158,53 @@ async def dispatch_live_pg_collect(
         "message": f"Live UPI payment link & Dynamic QR generated for ₹{amount:.2f}."
     }
 
+async def check_live_gateway_payment_status(order_id: str) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Directly queries Cashfree or Razorpay live payment gateway APIs to verify
+    whether an order has actually been paid and debited by the bank.
+    Zero fake verifications or simulated self-approvals permitted.
+    """
+    # 1. Cashfree API Verification
+    if CASHFREE_APP_ID and CASHFREE_SECRET_KEY:
+        base_url = "https://sandbox.cashfree.com/pg" if CASHFREE_ENV.upper() == "SANDBOX" else "https://api.cashfree.com/pg"
+        headers = {
+            "x-client-id": CASHFREE_APP_ID,
+            "x-client-secret": CASHFREE_SECRET_KEY,
+            "x-api-version": "2023-08-01",
+            "Content-Type": "application/json"
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{base_url}/orders/{order_id}", headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    st = data.get("order_status", "").upper()
+                    if st == "PAID":
+                        return True, "PAID", data
+                    return False, st or "PENDING", data
+        except Exception as e:
+            return False, "ERROR", {"error": str(e)}
+
+    # 2. Razorpay API Verification
+    elif RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+        try:
+            async with httpx.AsyncClient(timeout=10.0, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) as client:
+                resp = await client.get(f"https://api.razorpay.com/v1/orders/{order_id}/payments")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("items", [])
+                    for item in items:
+                        if item.get("status") in ["captured", "authorized"]:
+                            return True, "PAID", item
+                    return False, "PENDING", data
+        except Exception as e:
+            return False, "ERROR", {"error": str(e)}
+
+    # 3. No Live Payment Gateway configured in .env
+    return False, "NO_GATEWAY_CONFIGURED", {
+        "error": "No live Payment Gateway credentials (Cashfree/Razorpay) configured in .env. Automatic payment verification is disabled to prevent fraudulent or simulated transactions."
+    }
+
 def validate_bank_utr(utr_input: str) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Validates an authentic 12-digit Indian Bank UTR (Unique Transaction Reference) /

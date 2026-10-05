@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sys
+import time
 import shutil
 from pathlib import Path
 
@@ -186,7 +187,7 @@ async def run_tests():
     # 6. Test PDF Ticket Generation
     print("\n[Test 6] Testing IRCTC e-Ticket PDF Generation...")
     sample_booking = {
-        "pnr": "4829104829",
+        "pnr": f"482910_{int(time.time())}",
         "train_number": "12712",
         "train_name": "PINAKINI EXP",
         "source": "MAS",
