@@ -249,213 +249,122 @@ class BackgroundBookingWorker:
                 pass
 
     async def _execute_booking_flow(self, task: Dict[str, Any], avail: Dict[str, Any]):
-        """Executes payment, waits for Bank OTP via Telegram, and sends ticket PDF."""
+        """
+        Dispatches authentic IRCTC Payment Action Notification to the user.
+        Strict Financial Safety Policy:
+        - NEVER assumes or simulates payment deduction.
+        - Uses user's linked IRCTC account credentials.
+        - Prompts user to complete authentic payment on IRCTC / UPI app.
+        - Enforces mandatory verification with official 10-digit CRIS PNR.
+        """
         task_id = task["task_id"]
         chat_id = task["telegram_chat_id"]
+        tg_id = task.get("telegram_id")
         amount = avail.get("fare", 240.0)
+        pay_mode = task.get("payment_method", "UPI / Instant Pay")
+        p_info = task.get("passengers", [{}])[0]
 
-        # Determine payment mode chosen by user
-        pay_mode = task.get("payment_method", "Credit / Debit Card")
+        irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
+        user_display = irctc_user or "Linked IRCTC Account"
+
+        # Update task status to awaiting payment
+        task["latest_status"] = "AWAITING_IRCTC_PAYMENT_AND_PNR"
+        task["payable_fare"] = amount
+        await storage.save_task(task)
+
+        buttons = [
+            [InlineKeyboardButton("✅ I Have Paid on IRCTC — Verify Booking", callback_data=f"verify_booking_{task_id}")],
+            [InlineKeyboardButton("🔗 Open Official IRCTC Portal", url="https://www.irctc.co.in/nget/train-search")],
+            [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
+        ]
+        keyboard = InlineKeyboardMarkup(buttons)
 
         if pay_mode == "IRCTC eWallet":
-            from live_payment_service import process_live_ewallet_payment
-            ewallet_pin = await storage.get_decrypted_ewallet(task.get("telegram_id"))
-            irctc_user, _ = await storage.get_decrypted_credentials(task.get("telegram_id"))
-
-            if not ewallet_pin:
-                await self.bot_app.bot.send_message(
-                    chat_id=chat_id,
-                    text="❌ *IRCTC eWallet Transaction PIN Missing!*\n\nPlease configure your 4-6 digit eWallet PIN using `/wallet` to authorize auto-debit.",
-                    parse_mode="Markdown"
-                )
-                payment_res = {"success": False, "error": "IRCTC eWallet PIN not configured. Use /wallet."}
-            else:
-                await self.bot_app.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"💼 *Authenticating official IRCTC e-Wallet for `{irctc_user or 'Passenger'}`...*\n"
-                        f"• Debit Amount: `₹{amount + 11.80:.2f}` (Fare: ₹{amount:.2f} + IRCTC Fee: ₹11.80)\n"
-                        "• Zero Gateway Latency Auto-Debit active!"
-                    ),
-                    parse_mode="Markdown"
-                )
-                payment_res = await process_live_ewallet_payment(
-                    task_id=task_id,
-                    amount=amount,
-                    ewallet_pin=ewallet_pin,
-                    irctc_user=irctc_user
-                )
-                if payment_res.get("success"):
-                    verif_str = f"Official IRCTC eWallet Auto-Debit (`{payment_res.get('transaction_id')}`)"
-
-        elif pay_mode == "UPI / Instant Pay":
-            upi_id = task.get("upi_id") or "Registered UPI App"
-            from live_payment_service import dispatch_live_pg_collect, generate_upi_intent_uri, generate_dynamic_qr_url
-
-            total_amount = amount + 17.70
-            pg_res = await dispatch_live_pg_collect(task_id, total_amount, upi_id)
-            upi_uri, txn_ref = generate_upi_intent_uri(total_amount, task_id)
-            qr_code_url = generate_dynamic_qr_url(upi_uri, size=350)
-
-            order_ref = pg_res.get("order_id", txn_ref)
-            async def upi_prompt_callback(chat_id, amount, timeout_sec):
-                gateway_mode = "⚡ [LIVE PAYMENT GATEWAY COLLECT DISPATCHED]" if pg_res.get("is_live_gateway") else "📲 [DIRECT UPI INTENT & DYNAMIC QR READY]"
-                gateway_name = pg_res.get("gateway", "NPCI UPI Engine")
-                
-                if pg_res.get("is_live_gateway"):
-                    instructions = (
-                        "👉 **How to complete live payment:**\n"
-                        "1️⃣ **App Notification:** Open your UPI app (PhonePe / GPay / Paytm) and tap **Approve**.\n"
-                        "2️⃣ **Scan QR Code:** Or scan the dynamic QR code above with any UPI app.\n"
-                        "3️⃣ **Verify:** Tap **'🔄 Verify Bank Payment'** below once paid in your app."
-                    )
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Verify Bank Payment", callback_data=f"check_pg_status_{order_ref}")],
-                        [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
-                    ])
-                else:
-                    instructions = (
-                        "👉 **How to complete payment:**\n"
-                        "1️⃣ **Scan QR Code:** Scan the dynamic QR code above to transfer funds directly to merchant VPA.\n"
-                        "2️⃣ **Official IRCTC Settlement:** Because no automated merchant PG is linked to this bot, click below to book and pay directly on official IRCTC for genuine CRIS PNR issuance!"
-                    )
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔗 Book & Pay on Official IRCTC", url="https://www.irctc.co.in/nget/train-search")],
-                        [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
-                    ])
-
-                prompt_caption = (
-                    f"{gateway_mode}\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"• *Destination UPI ID:* `{upi_id}`\n"
-                    f"• *Payable Amount:* `₹{total_amount:.2f}` (incl. IRCTC fee)\n"
-                    f"• *Gateway Engine:* `{gateway_name}`\n"
-                    f"• *Time Limit:* `{timeout_sec}` seconds\n"
-                    f"• *Reference ID:* `{txn_ref}`\n\n"
-                    f"{instructions}"
-                )
-                try:
-                    # Send Dynamic QR Photo to chat
-                    await self.bot_app.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=qr_code_url,
-                        caption=prompt_caption,
-                        reply_markup=keyboard,
-                        parse_mode="Markdown"
-                    )
-                except Exception as photo_err:
-                    print(f"[WARN] Failed to send QR photo: {photo_err}")
-                    await self.bot_app.bot.send_message(
-                        chat_id=chat_id,
-                        text=prompt_caption,
-                        reply_markup=keyboard,
-                        parse_mode="Markdown"
-                    )
-
-            payment_res = await self.service.request_upi_payment_and_wait(
-                chat_id=chat_id,
-                amount=amount,
-                prompt_callback=upi_prompt_callback
+            ewallet_pin = await storage.get_decrypted_ewallet(tg_id)
+            pin_note = "PIN On File (Encrypted)" if ewallet_pin else "PIN Needed on IRCTC"
+            total_ewallet_amount = amount + 11.80
+            prompt_text = (
+                "🚨 <b>CONFIRMED SEATS OPEN ON IRCTC — PAYMENT ACTION REQUIRED</b> 🚨\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
+                f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
+                f"• <b>Passenger:</b> {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
+                f"• <b>Berth Preference:</b> {p_info.get('berth', 'No Preference')}\n"
+                f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
+                f"• <b>Payable Amount:</b> <code>₹{total_ewallet_amount:.2f}</code> (Fare: ₹{amount:.2f} + IRCTC Fee: ₹11.80)\n"
+                f"• <b>Payment Rail:</b> <code>Official IRCTC eWallet</code> ({pin_note})\n\n"
+                "💼 <b>HOW TO COMPLETE YOUR PAYMENT:</b>\n"
+                f"1️⃣ Login to your official IRCTC account <code>{user_display}</code> on <a href='https://www.irctc.co.in/nget/train-search'>irctc.co.in</a>.\n"
+                f"2️⃣ Confirm payment of <b>₹{total_ewallet_amount:.2f}</b> from your eWallet deposit balance.\n\n"
+                "⚠️ <b>STRICT FINANCIAL SAFETY NOTICE:</b>\n"
+                "Because real money is involved, this bot <b>NEVER assumes or fakes payment success</b>.\n"
+                "Once completed, tap <b>'✅ I Have Paid on IRCTC — Verify Booking'</b> below and provide your <b>10-digit CRIS PNR</b> to verify with Indian Railways!"
             )
-            verif_str = f"Live UPI Payment Verified ({upi_id})"
+            await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard, parse_mode="HTML")
+
+        elif pay_mode == "Credit / Debit Card":
+            card_data = await storage.get_decrypted_card(tg_id)
+            c_num = card_data.get("card_number", "") if card_data else ""
+            card_mask = f"**** **** **** {c_num[-4:]}" if len(c_num) >= 4 else "Saved Bank Card"
+            total_card_amount = amount + 17.70
+            prompt_text = (
+                "🚨 <b>CONFIRMED SEATS OPEN ON IRCTC — PAYMENT ACTION REQUIRED</b> 🚨\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
+                f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
+                f"• <b>Passenger:</b> {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
+                f"• <b>Berth Preference:</b> {p_info.get('berth', 'No Preference')}\n"
+                f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
+                f"• <b>Payable Amount:</b> <code>₹{total_card_amount:.2f}</code> (incl. IRCTC fee)\n"
+                f"• <b>Card Rail:</b> <code>{card_mask}</code>\n\n"
+                "💳 <b>HOW TO COMPLETE YOUR PAYMENT:</b>\n"
+                f"1️⃣ Open official <a href='https://www.irctc.co.in/nget/train-search'>irctc.co.in</a> under account <code>{user_display}</code>.\n"
+                "2️⃣ Complete payment on the official IRCTC card payment gateway using bank 3D-Secure OTP.\n\n"
+                "⚠️ <b>STRICT FINANCIAL SAFETY NOTICE:</b>\n"
+                "Because real money is involved, this bot <b>NEVER assumes or fakes payment success</b>.\n"
+                "Once approved, tap <b>'✅ I Have Paid on IRCTC — Verify Booking'</b> below and provide your <b>10-digit CRIS PNR</b> to verify with Indian Railways!"
+            )
+            await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard, parse_mode="HTML")
 
         else:
-            # Credit / Debit Card Flow
-            from live_payment_service import create_live_card_payment_session
-            card_data = await storage.get_decrypted_card(task.get("telegram_id"))
-            card_session = await create_live_card_payment_session(
-                task_id=task_id,
-                amount=amount + 17.70,
-                card_info=card_data
+            # UPI / Instant Pay Mode
+            upi_id = task.get("upi_id") or "Your Registered UPI App"
+            from live_payment_service import generate_upi_intent_uri, generate_dynamic_qr_url
+            total_upi_amount = amount + 17.70
+            upi_uri, txn_ref = generate_upi_intent_uri(total_upi_amount, task_id)
+            qr_code_url = generate_dynamic_qr_url(upi_uri, size=350)
+
+            prompt_text = (
+                "🚨 <b>CONFIRMED SEATS OPEN ON IRCTC — PAYMENT ACTION REQUIRED</b> 🚨\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
+                f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
+                f"• <b>Passenger:</b> {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
+                f"• <b>Berth Preference:</b> {p_info.get('berth', 'No Preference')}\n"
+                f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
+                f"• <b>Payable Amount:</b> <code>₹{total_upi_amount:.2f}</code> (Official IRCTC Fare + fee)\n"
+                f"• <b>Destination UPI VPA:</b> <code>{upi_id}</code>\n\n"
+                "📲 <b>HOW TO COMPLETE YOUR PAYMENT:</b>\n"
+                f"1️⃣ <b>Check Your UPI App:</b> Open PhonePe, Google Pay, Paytm, or BHIM linked to <code>{upi_id}</code>.\n"
+                f"2️⃣ <b>Approve IRCTC Request:</b> Check for the payment request from <b>IRCTC</b> (or scan QR code) for <b>₹{total_upi_amount:.2f}</b> and authorize with your UPI PIN.\n"
+                "3️⃣ <b>Direct IRCTC Checkout:</b> You can also complete it on <a href='https://www.irctc.co.in/nget/train-search'>irctc.co.in</a>.\n\n"
+                "⚠️ <b>STRICT FINANCIAL SAFETY NOTICE:</b>\n"
+                "Because real money is involved, this bot <b>NEVER assumes or fakes payment success</b>.\n"
+                "After paying, tap <b>'✅ I Have Paid on IRCTC — Verify Booking'</b> below and enter your <b>10-digit CRIS PNR Number</b> from your IRCTC SMS to verify!"
             )
-
-            async def otp_prompt_callback(chat_id, card_mask, amount, timeout_sec):
-                gateway_title = "⚡ [LIVE 3D-SECURE BANK CHECKOUT INITIATED]" if card_session.get("is_live_gateway") else "🔐 [BANK 3D-SECURE ACS GATEWAY ACTIVE]"
-                gateway_name = card_session.get("gateway", "Direct Bank 3D-Secure ACS")
-                link_text = ""
-                buttons = []
-                if card_session.get("payment_link"):
-                    link_text = f"\n🔗 *Bank Gateway Link:* [Click Here to Authenticate Live]({card_session['payment_link']})\n"
-                    buttons.append([InlineKeyboardButton("💳 Open Bank 3D-Secure Page", url=card_session["payment_link"])])
-
-                buttons.append([InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")])
-                keyboard = InlineKeyboardMarkup(buttons)
-
-                prompt_text = (
-                    f"{gateway_title}\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"• *Card:* `{card_mask}`\n"
-                    f"• *Gateway:* `{gateway_name}`\n"
-                    f"• *Amount:* `₹{amount + 17.70:.2f}` (incl. IRCTC fee)\n"
-                    f"• *Time Limit:* `{timeout_sec}` seconds\n"
-                    f"{link_text}\n"
-                    f"📲 *Please enter the 3D-Secure Bank OTP sent to your registered mobile phone directly in this chat:* 👇"
+            try:
+                await self.bot_app.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=qr_code_url,
+                    caption=prompt_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
                 )
-                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard, parse_mode="Markdown")
-
-            payment_res = await self.service.request_card_payment_and_wait_for_otp(
-                chat_id=chat_id,
-                amount=amount,
-                prompt_callback=otp_prompt_callback,
-                card_info=card_data
-            )
-            verif_str = f"Live 3D-Secure Card Payment Verified (OTP `{payment_res.get('otp')}`)"
-
-        if not payment_res.get("success"):
-            await self.bot_app.bot.send_message(
-                chat_id=chat_id,
-                text=f"❌ *Booking Failed:* {payment_res.get('error')}",
-                parse_mode="Markdown"
-            )
-            return
-
-        # Strike successful! Create verified reference ID (no fake CRIS PNRs)
-        ref_id = f"STRIKE-{task['train_number']}-{datetime.datetime.now().strftime('%H%M%S')}"
-        booking_data = {
-            "pnr": ref_id,
-            "train_number": task["train_number"],
-            "train_name": task.get("train_name", "SUPERFAST EXP"),
-            "source": task["source_stn"],
-            "dest": task["dest_stn"],
-            "journey_date": task["journey_date"],
-            "coach_class": task["coach_class"],
-            "fare": amount,
-            "passengers": task.get("passengers", []),
-            "payment_method": f"{pay_mode} ({payment_res.get('card_mask', 'Verified')})"
-        }
-
-        pdf_path = generate_ticket_pdf(booking_data)
-
-        # Notify user with full strike confirmation
-        p_info = task.get("passengers", [{}])[0]
-        success_msg = (
-            f"⚡⚡🎯 *TARGET ACQUIRED! CONFIRMED SEATS RELEASED!* 🎯⚡⚡\n\n"
-            f"• *Ref ID:* `{ref_id}`\n"
-            f"• *Train:* {task['train_number']} ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
-            f"• *Route:* {task['source_stn']} ➔ {task['dest_stn']}\n"
-            f"• *Journey Date:* {task['journey_date']}\n"
-            f"• *Passenger:* {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
-            f"• *Berth Preference:* {p_info.get('berth', 'No Preference')}\n"
-            f"• *Payment Verified:* {verif_str}\n\n"
-            "🚨 *CHART PREPARATION / CANCELLATION WINDOW ACTIVE!*\n"
-            "Unutilized quota berths are now open on the reservation network for immediate booking.\n\n"
-            "🔗 *Complete 1-Click Booking on Official IRCTC:* [irctc.co.in](https://www.irctc.co.in/nget/train-search)\n"
-            "🔍 *Check Live Status on IndianRail:* [indianrail.gov.in](https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html)\n\n"
-            "ℹ️ *Official PNR Policy Notice:* To protect you against fraud, the official 10-digit government PNR is issued directly by CRIS upon completion of payment on irctc.co.in. The bot never generates fake PNRs.\n\n"
-            f"📄 *Agent Sniper Strike Receipt (PDF) attached below:* 👇"
-        )
-        await self.bot_app.bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="Markdown")
-
-        # Send PDF file
-        with open(pdf_path, "rb") as doc:
-            await self.bot_app.bot.send_document(
-                chat_id=chat_id,
-                document=doc,
-                filename=f"Sniper_Strike_{ref_id}.pdf",
-                caption=f"⚠️ Agent Sniper Strike Receipt ({ref_id}). Official government PNR is issued directly by CRIS on irctc.co.in."
-            )
-
-        # Auto-cleanup: remove task from JSON file so no unnecessary data remains
-        await storage.delete_task(task_id)
-        self.status_message_ids.pop(task_id, None)
-        print(f"[Scheduler] Successfully booked and purged Task {task_id}.")
+            except Exception as e:
+                print(f"[WARN] Failed to send photo: {e}")
+                await self.bot_app.bot.send_message(
+                    chat_id=chat_id,
+                    text=prompt_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )

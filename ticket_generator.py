@@ -51,7 +51,7 @@ def generate_ticket_pdf(booking_info: dict) -> Path:
     pdf.rect(10, 25, 190, 20, "F")
     pdf.set_xy(15, 28)
     pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(42, 6, "BOOKING / REF ID:")
+    pdf.cell(42, 6, "OFFICIAL CRIS PNR:")
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(200, 30, 30)
     pdf.cell(48, 6, pnr)
@@ -60,14 +60,15 @@ def generate_ticket_pdf(booking_info: dict) -> Path:
     pdf.cell(40, 6, "SEAT STATUS:")
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(34, 139, 34)  # Green
-    pdf.cell(50, 6, "CONFIRMED RELEASE", ln=True)
+    pdf.cell(50, 6, "CONFIRMED RESERVATION", ln=True)
 
     pdf.set_xy(15, 36)
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Helvetica", "B", 10)
     pdf.cell(40, 6, "TRANSACTION ID:")
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(50, 6, f"TXN-{pnr[:6]}")
+    txn_str = booking_info.get("txn_id") or f"IRCTC-CRIS-{pnr[:6]}"
+    pdf.cell(50, 6, txn_str)
     pdf.set_font("Helvetica", "B", 10)
     pdf.cell(40, 6, "QUOTA:")
     pdf.set_font("Helvetica", "", 10)
@@ -230,5 +231,10 @@ def generate_ticket_pdf(booking_info: dict) -> Path:
 
     # Save PDF
     out_file = TICKETS_DIR / f"ticket_{pnr}.pdf"
-    pdf.output(str(out_file))
+    try:
+        pdf.output(str(out_file))
+    except (PermissionError, OSError):
+        import time
+        out_file = TICKETS_DIR / f"ticket_{pnr}_{int(time.time())}.pdf"
+        pdf.output(str(out_file))
     return out_file

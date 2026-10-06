@@ -2,7 +2,6 @@
 import asyncio
 import os
 import sys
-import time
 import shutil
 from pathlib import Path
 
@@ -187,7 +186,7 @@ async def run_tests():
     # 6. Test PDF Ticket Generation
     print("\n[Test 6] Testing IRCTC e-Ticket PDF Generation...")
     sample_booking = {
-        "pnr": f"482910_{int(time.time())}",
+        "pnr": "4829104829",
         "train_number": "12712",
         "train_name": "PINAKINI EXP",
         "source": "MAS",
@@ -220,14 +219,15 @@ async def run_tests():
     )
     assert res.get("success") is True, f"OTP payment failed: {res}"
     assert res.get("otp") == "481920", f"Wrong OTP received: {res.get('otp')}"
-    print(f"✅ Card Payment & OTP Relay: PASSED (Txn ID: {res.get('transaction_id')})")
+    assert res.get("auth_status") == "AWAITING_CRIS_PNR"
+    print(f"✅ Card Payment & OTP Relay: PASSED (Status: {res.get('auth_status')})")
 
     # 7b. Test IRCTC eWallet Instant Payment
     print("\n[Test 7b] Testing IRCTC eWallet Instant Payment Flow...")
     wallet_res = await service.request_ewallet_payment(test_user_id, 240.0)
     assert wallet_res.get("success") is True
-    assert "WALLET" in wallet_res.get("transaction_id")
-    print(f"✅ eWallet Payment: PASSED (Txn ID: {wallet_res.get('transaction_id')})")
+    assert wallet_res.get("auth_status") == "AWAITING_CRIS_PNR"
+    print(f"✅ eWallet Payment: PASSED (Status: {wallet_res.get('auth_status')})")
 
     # 7c. Test UPI Mobile Collect Notification Flow
     print("\n[Test 7c] Testing UPI Mobile Collect Request Flow...")
@@ -239,6 +239,28 @@ async def run_tests():
     upi_res = await service.request_upi_payment_and_wait(test_user_id, 240.0, dummy_upi_prompt)
     assert upi_res.get("success") is True
     assert upi_res.get("otp") == "UPI-APPROVE-9988"
+    assert upi_res.get("auth_status") == "AWAITING_CRIS_PNR"
+    print(f"✅ UPI Payment Flow: PASSED (Status: {upi_res.get('auth_status')})")
+
+    # 7d. Test Strict 10-Digit CRIS PNR Format & Indian Railways Validation
+    print("\n[Test 7d] Testing Strict CRIS PNR Validation & Zero-Fake Verification...")
+    pnr_ok1, p1, _ = service.validate_pnr_format("4281928491")
+    assert pnr_ok1 and p1 == "4281928491", "Failed valid 10-digit PNR"
+
+    pnr_bad1, _, err1 = service.validate_pnr_format("0281928491")
+    assert not pnr_bad1, "Zone 0 should be rejected"
+
+    pnr_bad2, _, err2 = service.validate_pnr_format("12345")
+    assert not pnr_bad2, "Short PNR should be rejected"
+
+    pnr_res = await service.verify_cris_pnr("4281928491")
+    assert pnr_res.get("verified") is True, "Failed CRIS verification lookup"
+    assert pnr_res.get("pnr") == "4281928491"
+    print(f"   • Valid 10-Digit CRIS PNR:   {p1} (Verified)")
+    print(f"   • Rejected Bad PRS Zone:     {err1}")
+    print(f"   • Rejected Short Digits:     {err2}")
+    print(f"   • CRIS Verification Status:  {pnr_res.get('status')}")
+    print("✅ Strict CRIS PNR Validation & Zero-Fake Verification: PASSED")
     # 8. Test Seat Sniper Watchdog & Charting Release Trigger
     print("\n[Test 8] Testing Seat Sniper Watchdog & Charting/Cancellation Release Trigger...")
     sniper_avail_initial = await service.check_availability("12712", "2026-10-15", "SL", "MAS", "NLR")

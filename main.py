@@ -217,6 +217,7 @@ async def run_bot():
     app.add_handler(CommandHandler("card", bot.cmd_card))
     app.add_handler(CommandHandler("payment", bot.cmd_card))
     app.add_handler(CommandHandler("reset_card", bot.cmd_reset_card))
+    app.add_handler(CommandHandler("verify", bot.cmd_verify_pnr))
     app.add_handler(CallbackQueryHandler(bot.handle_callback_query))
 
     # Fallback message handler (used for OTP capture & general messages)
