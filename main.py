@@ -200,7 +200,7 @@ async def run_bot():
     app.add_handler(CommandHandler("start", bot.start_booking))
     app.add_handler(CommandHandler("book", bot.start_booking))
     app.add_handler(CommandHandler("info", bot.cmd_info))
-    app.add_handler(CommandHandler("help", bot.cmd_info))
+    app.add_handler(CommandHandler("help", bot.cmd_help))
     app.add_handler(CommandHandler("task", bot.cmd_tasks))
     app.add_handler(CommandHandler("tasks", bot.cmd_tasks))
     app.add_handler(CommandHandler("profile", bot.cmd_profile))

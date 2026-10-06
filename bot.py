@@ -453,36 +453,33 @@ async def handle_set_wallet_pin(update: Update, context: ContextTypes.DEFAULT_TY
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Explains how the IRCTC AI Booking Agent & Seat Sniper works end-to-end with full details."""
     info_text = (
-        "🤖 *IRCTC AI BOOKING AGENT — END-TO-END SYSTEM GUIDE*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎯 *How This Bot Works (Step-by-Step):*\n\n"
-        "1️⃣ *Live Train Discovery & Departure Sorting:*\n"
-        "• Send `/start`, `/book`, or your route like `KJM-MAS`.\n"
+        "🤖 *IRCTC AI AUTONOMOUS SEAT SNIPER — SYSTEM ARCHITECTURE*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎯 *HOW THE AGENT WORKS (END-TO-END FLOW):*\n\n"
+        "1️⃣ *Live Train Discovery & Earliest Departure Sorting:*\n"
+        "• Send `/start`, `/book`, or your route (e.g. `KJM-MAS` or `MAS-NLR`).\n"
         "• The agent queries live Indian Railways network feeds directly.\n"
-        "• Trains running on your selected travel date are sorted chronologically by earliest departure time.\n\n"
+        "• Trains running on your selected journey date are sorted chronologically by earliest departure time.\n\n"
         "2️⃣ *Official Railway Quotas & Live Fares:*\n"
-        "• For each train, the bot parses official reserved coach quotas (Field 62) allocated by Indian Railways (e.g. `SL: Quota 134 Berths`, `3A: Quota 300 Berths`).\n"
-        "• Live fares (Field 41) are fetched directly with zero synthetic pricing.\n\n"
-        "3️⃣ *Seat Availability Sniper (Chart Watchdog):*\n"
-        "• *Why regular Waiting List (WL) is skipped:* Indian Railways rules prohibit boarding with unconfirmed WL e-tickets.\n"
-        "• *The Charting Window:* CRIS prepares the 1st reservation chart ~4 hours before train departure.\n"
-        "• *Berth Release:* Unutilized quotas (defense, foreign tourist, VIP/HO, leftover Tatkal) release into the public pool as Current Availability (`CURR_AVBL`).\n"
-        "• *The Sniper Strike:* The bot maintains a 24/7 Watchdog on your train. The second unutilized berths hit the system, you get an immediate strike alert to secure the seat in 1 click!\n\n"
-        "4️⃣ *100% Truth & Zero Fake Info Guarantee:*\n"
-        "• Official 10-digit government PNRs are cryptographically managed and issued only by CRIS/IRCTC upon payment.\n"
-        "• The agent never generates fake PNRs or simulated WL numbers.\n\n"
-        "5️⃣ *Bank-Grade Security (AES-256):*\n"
-        "• All sensitive credentials, payment cards, and UPI IDs are encrypted with AES-256 Fernet for your chat only.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📋 *All Available Commands:*\n"
-        "• `/start` or `/book` — Search trains & start booking\n"
-        "• `/tasks` (or `/task`) — View all open monitoring tasks in progress\n"
-        "• `/info` — View this end-to-end operational guide\n"
-        "• `/account` — Check or update your linked IRCTC ID\n"
-        "• `/upi` — Check or update your linked UPI address\n"
-        "• `/wallet` — Check or update your IRCTC eWallet PIN\n"
-        "• `/card` — Check or update your encrypted payment card\n"
-        "• `/cancel` — Cancel any active booking conversation"
+        "• For each train, the bot parses official reserved coach quotas (Field 62) allocated by Indian Railways.\n"
+        "• Live fares (Field 41) are fetched with zero synthetic or fake pricing.\n\n"
+        "3️⃣ *Exclusive IRCTC e-Wallet Rail & Pre-Flight Balance Gate:*\n"
+        "• Indian Railways tickets sell out in seconds during chart unfreezing. To prevent gateway/OTP delays, this agent operates **exclusively on IRCTC e-Wallet**.\n"
+        "• At sniper arming time, the bot calculates: `Ticket Base Fare + ₹11.80` (Official IRCTC eWallet fee of ₹10 + 18% GST).\n"
+        "• If balance is insufficient, it blocks activation, outputs the exact shortfall, and gives you the direct deposit link.\n\n"
+        "4️⃣ *Smart Charting Watchdog (Zero 15-Minute Spam):*\n"
+        "• For future bookings, the bot enters `SCHEDULED SLEEP` mode—no continuous spam loops.\n"
+        "• 1 hour before chart preparation, the watchdog wakes up and dynamically accelerates polling: **60s** at T-60m ➔ **30s** at T-30m ➔ **10s** at strike time.\n"
+        "• The sniper **NEVER** books Waiting List (WL) tickets.\n\n"
+        "5️⃣ *Zero-Intervention Direct Auto-Booking:*\n"
+        "• The exact millisecond confirmed berths open (`CNF` or `CURR_AVBL`), the agent strikes with 0.0s latency.\n"
+        "• Uses your linked IRCTC credentials and AES-256 encrypted eWallet PIN to auto-debit your IRCTC deposit.\n"
+        "• **Official IRCTC SMS:** Indian Railways sends the official booking confirmation SMS to your registered mobile phone (Sender: `IRCTCi`).\n"
+        "• **Telegram Delivery:** The bot sends your confirmed 10-digit CRIS PNR and the official Electronic Reservation Slip (ERS) PDF document directly into this chat!\n\n"
+        "6️⃣ *Multi-User Concurrency & Data Isolation:*\n"
+        "• Every Telegram user is 100% independent. $N$ chats can simultaneously monitor and book $N$ different trains in parallel with zero cross-talk.\n\n"
+        "7️⃣ *Bank-Grade Security (AES-256):*\n"
+        "• All credentials, passwords, and PINs are encrypted at rest with AES-256 Fernet."
     )
     keyboard = InlineKeyboardMarkup([
         [
@@ -492,7 +489,44 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     effective_msg = update.effective_message
     if effective_msg:
-        await effective_msg.reply_text(info_text, reply_markup=keyboard, parse_mode="Markdown")
+        await safe_reply(effective_msg, info_text, reply_markup=keyboard, parse_mode="Markdown")
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lists all available bot commands, their syntax, and their specific purpose."""
+    help_text = (
+        "📖 *IRCTC AI BOOKING AGENT — COMMAND DIRECTORY*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚆 *BOOKING & RESERVATION COMMANDS:*\n"
+        "• `/start` or `/book` — Search trains & start seat sniper booking flow.\n"
+        "• `/tasks` (or `/task`) — View all active seat sniper watchdog tasks currently in progress.\n"
+        "• `/cancel` — Instantly cancel any active booking conversation or input step.\n\n"
+        "💼 *IRCTC e-WALLET COMMANDS:*\n"
+        "• `/wallet` — View linked IRCTC account, verified balance, PIN status, and deposit URL.\n"
+        "• `/wallet balance <amount>` — Record/update your deposited eWallet balance (e.g. `/wallet balance 1500`).\n"
+        "• `/change_wallet` (or `/set_wallet`) — Enter or update your 4-6 digit IRCTC eWallet Transaction PIN.\n"
+        "• `/reset_wallet` — Securely erase your stored eWallet PIN from encrypted storage.\n\n"
+        "👤 *PASSENGER & ACCOUNT PROFILE COMMANDS:*\n"
+        "• `/profile` (or `/passenger`) — View your saved default passenger profile for 1-click booking.\n"
+        "• `/reset_profile` — Erase your saved passenger profile to enter new details.\n"
+        "• `/account` — View your linked IRCTC Username.\n"
+        "• `/change_account` (or `/set_account`) — Link or update your IRCTC Username & Password.\n"
+        "• `/reset_account` — Remove your linked IRCTC login credentials from this chat.\n\n"
+        "🔍 *VERIFICATION & INFORMATION COMMANDS:*\n"
+        "• `/info` — Comprehensive end-to-end architectural guide & official IRCTC charting rules.\n"
+        "• `/help` — Display this full command directory and usage instructions.\n"
+        "• `/verify` — Live verification of any 10-digit Indian Railways CRIS PNR against PRS network.\n\n"
+        "💡 *PRO-TIP FOR INSTANT BOOKINGS:*\n"
+        "Keep your IRCTC account linked (`/change_account`), eWallet PIN set (`/change_wallet`), and balance updated (`/wallet balance <amount>`). When seats release, booking completes automatically in 0 seconds with zero intervention!"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🚆 Start Booking", callback_data="info_start_booking"),
+            InlineKeyboardButton("📋 View Tasks", callback_data="info_view_tasks")
+        ]
+    ])
+    effective_msg = update.effective_message
+    if effective_msg:
+        await safe_reply(effective_msg, help_text, reply_markup=keyboard, parse_mode="Markdown")
 
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays all open seat monitoring / sniper tasks currently in progress for this user."""
