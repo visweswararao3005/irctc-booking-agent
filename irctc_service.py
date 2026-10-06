@@ -577,6 +577,18 @@ class IRCTCService:
     # ----------------- Strict CRIS PNR & Payment Verification -----------------
 
     @staticmethod
+    def is_irctc_maintenance_window(check_time: Optional[datetime.time] = None) -> Tuple[bool, str]:
+        """
+        Detects Indian Railways PRS / IRCTC Daily Maintenance Downtime Window:
+        Nightly 23:45 IST to 00:30 IST.
+        During this window, PRS flushes charts and resets reservation servers.
+        """
+        t = check_time or datetime.datetime.now().time()
+        if t >= datetime.time(23, 45) or t <= datetime.time(0, 30):
+            return True, "IRCTC Daily PRS Maintenance Window Active (23:45 - 00:30 IST). System resets charts; reservations resume at 00:30 IST."
+        return False, ""
+
+    @staticmethod
     def verify_ewallet_balance(balance: float, fare: float) -> Dict[str, Any]:
         """
         Calculates official IRCTC eWallet required amount and validates balance sufficiency.

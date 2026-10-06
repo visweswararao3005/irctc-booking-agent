@@ -823,6 +823,14 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text("❌ Please enter valid station codes as `SRC-DST` (e.g. `KJM-MAS` or `MAS-NLR`):")
         return STATE_ROUTE
 
+    if parts[0] == parts[1]:
+        await update.message.reply_text(
+            f"❌ *Identical Stations:* Origin and Destination stations cannot be the same (`{parts[0]}` ➔ `{parts[1]}`).\n\n"
+            "Please enter a valid route between two different stations (e.g. `KJM-MAS` or `MAS-NLR`):",
+            parse_mode="Markdown"
+        )
+        return STATE_ROUTE
+
     context.user_data["source"] = parts[0]
     context.user_data["dest"] = parts[1]
 
@@ -1395,9 +1403,21 @@ async def handle_passenger_name(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return STATE_CLASS_SELECT
 
-    context.user_data["p_name"] = text
+    clean_name = re.sub(r"[^A-Za-z\s.]", "", text).strip()
+    if len(clean_name) < 2 or len(clean_name) > 16 or not re.match(r"^[A-Za-z\s.]+$", text):
+        await update.message.reply_text(
+            "❌ *Invalid Passenger Name!*\n\n"
+            "• Indian Railways rules require names to contain **letters only** (no digits or symbols).\n"
+            "• Length must be between **2 and 16 characters**.\n\n"
+            "👉 Please enter a valid full name (e.g. `Balaji P` or `Suresh Kumar`):",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PASSENGER_NAME
+
+    context.user_data["p_name"] = clean_name
     await update.message.reply_text(
-        "Enter passenger *Age*:",
+        f"Selected Passenger: *{clean_name}*\n\nEnter passenger *Age*:",
         reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
         parse_mode="Markdown"
     )
