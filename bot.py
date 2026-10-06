@@ -496,25 +496,26 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📖 *IRCTC AI BOOKING AGENT — COMMAND DIRECTORY*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚆 *BOOKING & RESERVATION COMMANDS:*\n"
-        "• `/start` or `/book` — Search trains & start seat sniper booking flow.\n"
+        "🚆 *BOOKING & SNIPING:*\n"
+        "• `/start` (or `/book`, `/sniper`) — Search trains & start seat sniper booking flow.\n"
         "• `/tasks` (or `/task`) — View all active seat sniper watchdog tasks currently in progress.\n"
-        "• `/cancel` — Instantly cancel any active booking conversation or input step.\n\n"
-        "💼 *IRCTC e-WALLET COMMANDS:*\n"
-        "• `/wallet` — View linked IRCTC account, verified balance, PIN status, and deposit URL.\n"
-        "• `/wallet balance <amount>` — Record/update your deposited eWallet balance (e.g. `/wallet balance 1500`).\n"
+        "• `/cancel` — Instantly abort any active booking conversation or input step.\n\n"
+        "💼 *IRCTC e-WALLET (EXCLUSIVELY ACTIVE):*\n"
+        "• `/wallet` (or `/ewallet`, `/balance`) — View linked IRCTC account, balance, PIN status & top-up link.\n"
+        "• `/wallet balance <amount>` — Record/update deposited eWallet balance (e.g. `/wallet balance 1500`).\n"
         "• `/change_wallet` (or `/set_wallet`) — Enter or update your 4-6 digit IRCTC eWallet Transaction PIN.\n"
         "• `/reset_wallet` — Securely erase your stored eWallet PIN from encrypted storage.\n\n"
-        "👤 *PASSENGER & ACCOUNT PROFILE COMMANDS:*\n"
-        "• `/profile` (or `/passenger`) — View your saved default passenger profile for 1-click booking.\n"
-        "• `/reset_profile` — Erase your saved passenger profile to enter new details.\n"
+        "🔐 *IRCTC CREDENTIALS:*\n"
         "• `/account` — View your linked IRCTC Username.\n"
         "• `/change_account` (or `/set_account`) — Link or update your IRCTC Username & Password.\n"
-        "• `/reset_account` — Remove your linked IRCTC login credentials from this chat.\n\n"
-        "🔍 *VERIFICATION & INFORMATION COMMANDS:*\n"
+        "• `/reset_account` — Permanently delete your IRCTC login credentials from this chat.\n\n"
+        "👤 *PASSENGER PROFILE:*\n"
+        "• `/profile` (or `/passenger`) — View your saved default passenger profile & e-Wallet summary.\n"
+        "• `/reset_profile` — Erase all saved profile data (passenger, credentials, wallet) to start fresh.\n\n"
+        "🔍 *SYSTEM & VERIFICATION:*\n"
         "• `/info` — Comprehensive end-to-end architectural guide & official IRCTC charting rules.\n"
         "• `/help` — Display this full command directory and usage instructions.\n"
-        "• `/verify` — Live verification of any 10-digit Indian Railways CRIS PNR against PRS network.\n\n"
+        "• `/verify <pnr>` — Live verification of any 10-digit Indian Railways CRIS PNR against PRS network.\n\n"
         "💡 *PRO-TIP FOR INSTANT BOOKINGS:*\n"
         "Keep your IRCTC account linked (`/change_account`), eWallet PIN set (`/change_wallet`), and balance updated (`/wallet balance <amount>`). When seats release, booking completes automatically in 0 seconds with zero intervention!"
     )
@@ -621,12 +622,12 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(effective_msg, task_card, reply_markup=kb, parse_mode="Markdown")
 
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View saved passenger profile, IRCTC username, and linked payment method."""
+    """View saved passenger profile, IRCTC username, and linked e-Wallet status."""
     tg_id = update.effective_user.id
     passenger = await storage.get_passenger_profile(tg_id)
     irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
-    upi_id = await storage.get_decrypted_upi(tg_id)
-    card = await storage.get_decrypted_card(tg_id)
+    ewallet_pin = await storage.get_decrypted_ewallet(tg_id)
+    cur_bal = await storage.get_user_ewallet_balance(tg_id)
 
     p_line = (
         f"• *Default Passenger:* {passenger['name']} ({passenger['age']} yrs, {passenger['gender']}, {passenger.get('berth', 'No Preference')})\n"
@@ -637,26 +638,24 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     acc_line = (
         f"• *IRCTC Account:* `{irctc_user}` (Encrypted & linked)\n"
         if irctc_user
-        else "• *IRCTC Account:* Not linked yet\n"
+        else "• *IRCTC Account:* Not linked yet (Use `/change_account`)\n"
     )
 
-    if upi_id:
-        pay_line = f"• *Linked Payment:* `UPI` (`{upi_id}`)\n"
-    elif card and card.get("card_number"):
-        c_num = card["card_number"]
-        mask = f"**** **** **** {c_num[-4:]}"
-        pay_line = f"• *Linked Payment:* `Card` ({mask})\n"
-    else:
-        pay_line = "• *Linked Payment:* Not linked yet\n"
+    pin_desc = "PIN Configured & Active (AES-256)" if ewallet_pin else "PIN Not Set (Use `/change_wallet`)"
+    bal_desc = f"₹{cur_bal:.2f}" if cur_bal > 0 else "₹0.00 (Set via `/wallet balance <amt>`)"
+    wallet_line = (
+        f"• *IRCTC e-Wallet:* {pin_desc}\n"
+        f"• *Recorded Balance:* `{bal_desc}`\n"
+    )
 
     msg = (
         "👤 *YOUR SAVED BOOKING PROFILE*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{p_line}"
         f"{acc_line}"
-        f"{pay_line}\n"
+        f"{wallet_line}\n"
         "✨ *1-Click Booking Advantage:*\n"
-        "When these details are saved, the agent will **NEVER** ask you for them again during booking! You can review and confirm tickets in 1 tap.\n\n"
+        "When your passenger, IRCTC credentials, and e-Wallet PIN are saved, the agent books tickets in 0 seconds with zero manual intervention!\n\n"
         "👉 Need to update or reset any details? Use the buttons below:"
     )
 
@@ -665,21 +664,22 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("🔄 Reset Passenger", callback_data="reset_profile_passenger"),
             InlineKeyboardButton("🔐 Reset IRCTC", callback_data="reset_profile_irctc"),
-            InlineKeyboardButton("📱 Reset UPI", callback_data="reset_profile_upi")
+            InlineKeyboardButton("💼 Reset e-Wallet", callback_data="reset_profile_wallet")
         ]
     ])
     await safe_reply(update.effective_message, msg, reply_markup=kb, parse_mode="Markdown")
 
 async def cmd_reset_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reset all stored user data (passenger, IRCTC, payment) for this chat."""
+    """Reset all stored user data (passenger, IRCTC, e-Wallet) for this chat."""
     tg_id = update.effective_user.id
     await storage.reset_passenger_profile(tg_id)
     await storage.reset_user_credentials(tg_id)
+    await storage.reset_user_ewallet(tg_id)
     await storage.reset_user_upi(tg_id)
     await storage.reset_user_card(tg_id)
     await update.effective_message.reply_text(
         "🗑️ *All Saved Profile Data Cleared!*\n\n"
-        "Your saved passenger, IRCTC login credentials, and payment methods have been removed for this chat.\n"
+        "Your saved passenger, IRCTC login credentials, and e-Wallet configurations have been removed for this chat.\n"
         "Send /start to begin fresh anytime!",
         parse_mode="Markdown"
     )
@@ -1579,57 +1579,22 @@ async def check_credentials_and_next(update: Update, context: ContextTypes.DEFAU
 
 async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = update.effective_user.id
-    pay_mode = context.user_data.get("payment_method", "Credit / Debit Card")
+    context.user_data["payment_method"] = "IRCTC eWallet"
 
-    # 1. Credit / Debit Card Verification
-    if pay_mode == "Credit / Debit Card":
-        card = await storage.get_decrypted_card(tg_id)
-        if not card or not card.get("card_number"):
-            await safe_reply(
-                update.message,
-                "💳 *Payment Card Required for Card Checkout*\n\n"
-                "You haven't linked a payment card to this chat yet.\n"
-                "Please enter your *16-Digit Card Number* now:\n"
-                "_(Encrypted with AES-256 for this chat only)_",
-                reply_markup=ReplyKeyboardRemove(),
-                parse_mode="Markdown"
-            )
-            return STATE_CARD_NUM
-        else:
-            context.user_data["card_on_file"] = True
-
-    # 2. UPI / Instant Pay Verification
-    elif pay_mode == "UPI / Instant Pay":
-        upi = await storage.get_decrypted_upi(tg_id)
-        if not upi:
-            await safe_reply(
-                update.message,
-                "📱 *UPI ID / Mobile Number Required*\n\n"
-                "Please enter your **UPI ID / VPA** or registered 10-digit mobile number:\n"
-                "*(Examples: `9876543210@paytm`, `username@oksbi`, `name@ybl`)*\n\n"
-                "When seats open, payment collect push notifications will be dispatched to this UPI address.",
-                reply_markup=ReplyKeyboardRemove(),
-                parse_mode="Markdown"
-            )
-            return STATE_UPI_ID
-        else:
-            context.user_data["upi_id"] = upi
-
-    # 3. IRCTC eWallet Verification
-    elif pay_mode == "IRCTC eWallet":
-        ewallet_pin = await storage.get_decrypted_ewallet(tg_id)
-        if not ewallet_pin:
-            await safe_reply(
-                update.message,
-                "💼 *IRCTC eWallet PIN Required*\n\n"
-                "To authorize direct, zero-delay eWallet booking, please enter your **4-6 digit IRCTC eWallet Transaction PIN**:\n"
-                "_(Encrypted with AES-256 for future 1-click bookings)_",
-                reply_markup=ReplyKeyboardRemove(),
-                parse_mode="Markdown"
-            )
-            return STATE_EWALLET_PIN
-        else:
-            context.user_data["ewallet_on_file"] = True
+    # Exclusive IRCTC e-Wallet Auto-Debit Rail
+    ewallet_pin = await storage.get_decrypted_ewallet(tg_id)
+    if not ewallet_pin:
+        await safe_reply(
+            update.message,
+            "💼 *IRCTC eWallet PIN Required*\n\n"
+            "To authorize direct, zero-delay eWallet booking, please enter your **4-6 digit IRCTC eWallet Transaction PIN**:\n"
+            "_(Encrypted with AES-256 for future 1-click bookings)_",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        return STATE_EWALLET_PIN
+    else:
+        context.user_data["ewallet_on_file"] = True
 
     return await render_confirmation(update, context)
 
@@ -2131,10 +2096,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             pass
         return await cmd_profile(update, context)
 
-    elif data == "reset_profile_upi":
-        await storage.reset_user_upi(update.effective_user.id)
+    elif data == "reset_profile_wallet":
+        await storage.reset_user_ewallet(update.effective_user.id)
         try:
-            await query.answer("UPI ID removed!", show_alert=True)
+            await query.answer("IRCTC e-Wallet PIN removed!", show_alert=True)
         except Exception:
             pass
         return await cmd_profile(update, context)
