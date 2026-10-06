@@ -577,6 +577,30 @@ class IRCTCService:
     # ----------------- Strict CRIS PNR & Payment Verification -----------------
 
     @staticmethod
+    def verify_ewallet_balance(balance: float, fare: float) -> Dict[str, Any]:
+        """
+        Calculates official IRCTC eWallet required amount and validates balance sufficiency.
+        Enforces IRCTC eWallet Official Rules:
+        - Transaction fee: Rs. 10.00 + 18% GST (Rs. 11.80 per booking)
+        - Required Total = Ticket Fare + Rs. 11.80
+        """
+        fee = 11.80
+        total_required = round(float(fare) + fee, 2)
+        cur_bal = round(float(balance), 2)
+        is_sufficient = cur_bal >= total_required
+        shortfall = round(total_required - cur_bal, 2) if not is_sufficient else 0.0
+
+        return {
+            "is_sufficient": is_sufficient,
+            "fare": round(float(fare), 2),
+            "fee": fee,
+            "total_required": total_required,
+            "current_balance": cur_bal,
+            "shortfall": shortfall,
+            "deposit_url": "https://www.irctc.co.in/nget/deposit-ewallet"
+        }
+
+    @staticmethod
     def validate_pnr_format(pnr: str) -> Tuple[bool, str, str]:
         """
         Strictly validates if input is a genuine 10-digit Indian Railways CRIS PNR.

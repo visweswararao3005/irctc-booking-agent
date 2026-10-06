@@ -12,6 +12,7 @@ from security import encrypt_text, decrypt_text
 USERS_FILE = DATA_DIR / "users.json"
 TASKS_FILE = DATA_DIR / "active_tasks.json"
 SESSIONS_FILE = DATA_DIR / "sessions.json"
+BOOKINGS_FILE = DATA_DIR / "bookings.json"
 
 _lock = asyncio.Lock()
 
@@ -179,6 +180,23 @@ async def reset_user_ewallet(telegram_id: int) -> bool:
             return True
         return False
 
+async def save_user_ewallet_balance(telegram_id: int, balance: float) -> None:
+    """Save verified IRCTC eWallet balance for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        if user_key not in users:
+            users[user_key] = {"telegram_id": telegram_id}
+        users[user_key]["ewallet_balance"] = round(float(balance), 2)
+        _write_json_sync(USERS_FILE, users)
+
+async def get_user_ewallet_balance(telegram_id: int) -> float:
+    """Retrieve stored IRCTC eWallet balance for a specific Telegram chat."""
+    user = await get_user(telegram_id)
+    if not user:
+        return 0.0
+    return float(user.get("ewallet_balance", 0.0))
+
 # ----------------- Passenger Profile Management -----------------
 
 async def save_passenger_profile(
@@ -265,6 +283,16 @@ async def update_task(task_id: str, updates: Dict[str, Any]) -> Optional[Dict[st
             return tasks[task_id]
         return None
 
+async def save_task(task: Dict[str, Any]) -> None:
+    """Save or update an entire task dictionary."""
+    task_id = task.get("task_id")
+    if not task_id:
+        return
+    async with _lock:
+        tasks = _read_json_sync(TASKS_FILE)
+        tasks[task_id] = task
+        _write_json_sync(TASKS_FILE, tasks)
+
 async def delete_task(task_id: str) -> bool:
     """
     Purge task from JSON storage once completed, booked, expired, or cancelled.
@@ -302,3 +330,22 @@ async def clear_user_session(telegram_id: int) -> None:
         if str(telegram_id) in sessions:
             del sessions[str(telegram_id)]
             _write_json_sync(SESSIONS_FILE, sessions)
+
+# ----------------- Confirmed Booking History -----------------
+
+async def save_user_booking(telegram_id: int, booking_data: Dict[str, Any]) -> None:
+    """Save completed booking for a specific user."""
+    async with _lock:
+        bookings = _read_json_sync(BOOKINGS_FILE)
+        user_key = str(telegram_id)
+        if user_key not in bookings:
+            bookings[user_key] = []
+        bookings[user_key].append(booking_data)
+        _write_json_sync(BOOKINGS_FILE, bookings)
+
+async def get_user_bookings(telegram_id: int) -> List[Dict[str, Any]]:
+    """Retrieve list of completed bookings for user."""
+    async with _lock:
+        bookings = _read_json_sync(BOOKINGS_FILE)
+        return bookings.get(str(telegram_id), [])
+

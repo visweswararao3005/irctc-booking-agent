@@ -601,6 +601,108 @@ async def run_tests():
     print(f"   • Authenticated Txn ID:    {wallet_res.get('transaction_id')}")
     print("✅ Live Card Sessions & Official IRCTC eWallet Auto-Debit: PASSED")
 
+    # -------------------------------------------------------------
+    # [Test 17] Exclusive IRCTC eWallet Rail & Direct Auto-Booking
+    # -------------------------------------------------------------
+    print("\n[Test 17] Testing Exclusive IRCTC eWallet Rail, Balance Pre-Check & Direct Auto-Booking...")
+    test_user_ewallet = 77889911
+
+    # 1. Test Balance Storage
+    await storage.save_user_ewallet_balance(test_user_ewallet, 100.0)
+    bal = await storage.get_user_ewallet_balance(test_user_ewallet)
+    assert bal == 100.0, f"Expected 100.0, got {bal}"
+
+    # 2. Test Pre-flight verification with shortfall
+    ticket_fare = 240.0
+    check_insufficient = IRCTCService.verify_ewallet_balance(bal, ticket_fare)
+    assert check_insufficient["is_sufficient"] is False, "Should be insufficient"
+    assert check_insufficient["fare"] == 240.0
+    assert check_insufficient["fee"] == 11.80
+    assert check_insufficient["total_required"] == 251.80
+    assert check_insufficient["shortfall"] == 151.80
+    assert "deposit-ewallet" in check_insufficient["deposit_url"]
+    print(f"   • Shortfall Detection:     Balance ₹{bal:.2f} < ₹{check_insufficient['total_required']:.2f} (Shortfall: ₹{check_insufficient['shortfall']:.2f})")
+
+    # 3. Test Pre-flight verification with sufficient balance
+    await storage.save_user_ewallet_balance(test_user_ewallet, 500.0)
+    bal_after = await storage.get_user_ewallet_balance(test_user_ewallet)
+    check_sufficient = IRCTCService.verify_ewallet_balance(bal_after, ticket_fare)
+    assert check_sufficient["is_sufficient"] is True, "Should be sufficient"
+    assert check_sufficient["shortfall"] == 0.0
+    print(f"   • Sufficient Balance:      Balance ₹{bal_after:.2f} >= ₹{check_sufficient['total_required']:.2f} (Ready for Direct Auto-Debit)")
+
+    # 4. Test Scheduler Direct Seat Booking with Zero User Action
+    from scheduler import BackgroundBookingWorker
+    class MockBotApp:
+        class MockBot:
+            def __init__(self):
+                self.messages = []
+                self.documents = []
+            async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+                self.messages.append({"chat_id": chat_id, "text": text})
+            async def send_document(self, chat_id, document, filename=None, caption=None):
+                self.documents.append({"chat_id": chat_id, "filename": filename, "caption": caption})
+            async def edit_message_text(self, **kwargs):
+                pass
+        def __init__(self):
+            self.bot = self.MockBot()
+
+    mock_app = MockBotApp()
+    worker = BackgroundBookingWorker(mock_app, service)
+
+    # Save credentials & eWallet PIN for test user
+    await storage.save_user_credentials(test_user_ewallet, "balaji_p", "pass123")
+    await storage.save_user_ewallet(test_user_ewallet, "4455")
+
+    # Create active task
+    test_task_id = await storage.add_task({
+        "telegram_id": test_user_ewallet,
+        "telegram_chat_id": test_user_ewallet,
+        "train_number": "12712",
+        "train_name": "PINAKINI SF EXP",
+        "coach_class": "SL",
+        "source_stn": "MAS",
+        "dest_stn": "NLR",
+        "journey_date": "2026-10-15",
+        "payment_method": "IRCTC eWallet",
+        "passengers": [{"name": "Balaji P", "age": 28, "gender": "M", "berth": "Lower Berth (LB)"}],
+        "booking_mode": "SNIPER"
+    })
+
+    task_obj = await storage.get_task(test_task_id)
+    avail_open = {"is_available": True, "seats": 2, "status": "AVAILABLE 2", "fare": ticket_fare}
+
+    # Execute direct booking flow!
+    await worker._execute_booking_flow(task_obj, avail_open)
+
+    # Verify:
+    # a. User's ewallet balance was debited (500 - 251.80 = 248.20)
+    bal_after_booking = await storage.get_user_ewallet_balance(test_user_ewallet)
+    assert bal_after_booking == 248.20, f"Expected 248.20, got {bal_after_booking}"
+
+    # b. Task was purged upon confirmation
+    task_check = await storage.get_task(test_task_id)
+    assert task_check is None, "Task was not deleted upon successful booking"
+
+    # c. Booking recorded in storage history
+    user_bookings = await storage.get_user_bookings(test_user_ewallet)
+    assert len(user_bookings) >= 1, "No booking recorded in user history"
+    last_b = user_bookings[-1]
+    assert last_b["train_number"] == "12712"
+    assert "4" == last_b["pnr"][0] and len(last_b["pnr"]) == 10, f"Invalid PNR format: {last_b['pnr']}"
+
+    # d. Confirmation message and PDF document were sent to user
+    assert len(mock_app.bot.messages) >= 1, "No confirmation message sent"
+    assert "CONFIRMED SEATS BOOKED DIRECTLY ON IRCTC" in mock_app.bot.messages[-1]["text"]
+    assert len(mock_app.bot.documents) >= 1, "No PDF ticket sent"
+    assert "IRCTC_Confirmed_" in mock_app.bot.documents[-1]["filename"]
+
+    print(f"   • Auto-Debited Balance:    ₹{bal_after:.2f} ➔ ₹{bal_after_booking:.2f} (Total Paid: ₹{ticket_fare + 11.80:.2f})")
+    print(f"   • Generated CRIS PNR:      {last_b['pnr']} (Verified 10-Digit PRS)")
+    print(f"   • Electronic PDF Delivered: {mock_app.bot.documents[-1]['filename']}")
+    print(f"   • Zero User Action Needed: 100% Direct Autonomous Auto-Booking Confirmed")
+    print("✅ Exclusive IRCTC eWallet Rail & Direct Auto-Booking: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

@@ -204,8 +204,7 @@ def generate_ticket_pdf(booking_info: dict) -> Path:
     pdf.set_font("Helvetica", "B", 10)
     pdf.cell(95, 6, "Total Amount Paid:")
     pdf.cell(95, 6, f"INR {total:.2f}", ln=True, align="R")
-    pdf.set_font("Helvetica", "I", 9)
-    pay_m = booking_info.get("payment_method", "Credit Card (Verified via 3D-Secure Bank OTP)")
+    pay_m = str(booking_info.get("payment_method", "Official IRCTC eWallet")).replace("₹", "Rs. ")
     pdf.cell(190, 5, f"Payment Mode: {pay_m}", ln=True)
 
     # Official Government Links & Verification Box

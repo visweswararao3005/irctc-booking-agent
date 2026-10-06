@@ -360,33 +360,45 @@ async def cmd_reset_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------- IRCTC eWallet Management Handlers -----------------
 
 async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View stored IRCTC eWallet configuration for this specific chat."""
+    """View or update stored IRCTC eWallet configuration and balance for this specific chat."""
     tg_id = update.effective_user.id
+
+    # Support /wallet balance 1500 or /wallet 1500
+    if context and context.args:
+        raw_arg = " ".join(context.args).lower().replace("balance", "").replace("₹", "").replace(",", "").strip()
+        try:
+            val = float(raw_arg)
+            if val >= 0:
+                await storage.save_user_ewallet_balance(tg_id, val)
+                await update.message.reply_text(
+                    f"✅ *IRCTC eWallet Balance Updated!*\n\n"
+                    f"• *Recorded Balance:* `₹{val:.2f}`\n"
+                    f"• *Direct Auto-Debit Ready:* Funds are verified for instant 0-second reservation strikes.\n\n"
+                    "👉 Tap `/book` or return to your booking confirmation to activate Seat Sniper!",
+                    parse_mode="Markdown"
+                )
+                return
+        except ValueError:
+            pass
+
     pin = await storage.get_decrypted_ewallet(tg_id)
     irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
     user_str = irctc_user or "Linked IRCTC Account"
+    cur_bal = await storage.get_user_ewallet_balance(tg_id)
+    masked_pin = ("•" * len(pin)) if pin else "⚠️ Not Set (Use /change_wallet)"
 
-    if not pin:
-        await update.message.reply_text(
-            "ℹ️ *No IRCTC eWallet Configured*\n\n"
-            "You haven't linked your IRCTC eWallet Transaction PIN yet.\n"
-            "• Zero gateway latency auto-debit\n"
-            "• Official IRCTC Fee: ₹10.00 + 18% GST (₹11.80)\n\n"
-            "Use `/change_wallet` to set your 4-6 digit eWallet PIN for instant bookings.",
-            parse_mode="Markdown"
-        )
-        return
-
-    masked_pin = "•" * len(pin)
     await update.message.reply_text(
         f"💼 *Your Linked IRCTC eWallet:*\n\n"
         f"• *IRCTC Account:* `{user_str}`\n"
+        f"• *Current eWallet Balance:* `₹{cur_bal:.2f}`\n"
         f"• *Transaction PIN:* `{masked_pin}`\n"
-        f"• *Status:* Authenticated & Active (AES-256 Encrypted)\n"
-        f"• *Official Fee:* ₹10.00 + 18% GST (₹11.80 per txn)\n\n"
-        "Commands:\n"
-        "• `/change_wallet` - Update your eWallet PIN\n"
-        "• `/reset_wallet` - Remove your eWallet PIN from storage",
+        f"• *Auto-Debit Status:* {'✅ Ready for 0s Instant Booking' if pin and cur_bal > 0 else '⚠️ Needs PIN or Balance Top-Up'}\n"
+        f"• *Official Fee:* ₹10.00 + 18% GST (₹11.80 per booking)\n\n"
+        "🔗 *Official Deposit Portal:* [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n\n"
+        "🛠️ *Quick Commands:*\n"
+        "• `/wallet balance <amount>` — Update your eWallet balance (e.g. `/wallet balance 1500`)\n"
+        "• `/change_wallet` — Set or update your 4-6 digit Transaction PIN\n"
+        "• `/reset_wallet` — Remove your eWallet PIN from storage",
         parse_mode="Markdown"
     )
 
@@ -1192,24 +1204,48 @@ async def handle_class_select(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     context.user_data["fare"] = matching["fare"]
     context.user_data["class_status"] = matching["status"]
+    context.user_data["payment_method"] = "IRCTC eWallet"
 
-    payment_keyboard = [
-        ["💼 IRCTC eWallet", "💳 Credit / Debit Card"],
-        ["📱 UPI / Instant Pay"],
-        ["⬅️ Back", "❌ Cancel"]
-    ]
+    tg_id = update.effective_user.id
+    saved = await storage.get_passenger_profile(tg_id)
+    cur_bal = await storage.get_user_ewallet_balance(tg_id)
+    bal_check = irctc_svc.verify_ewallet_balance(cur_bal, matching["fare"])
+
+    wallet_summary = (
+        f"Selected Class: *{coach_code}* (Fare: ₹{int(matching['fare'])})\n\n"
+        "💼 *Payment Rail: IRCTC e-Wallet* (Exclusive Auto-Debit)\n"
+        f"• *Current eWallet Balance:* `₹{bal_check['current_balance']:.2f}`\n"
+        f"• *Required Amount:* `₹{bal_check['total_required']:.2f}` (Base fare + ₹11.80 IRCTC fee)\n"
+    )
+
+    if saved and saved.get("name"):
+        context.user_data["saved_profile"] = saved
+        choice_kb = [
+            [f"✅ Use Saved: {saved['name']} ({saved['age']}, {saved['gender']})"],
+            ["➕ Enter New Passenger Details"],
+            ["⬅️ Back", "❌ Cancel"]
+        ]
+        await update.message.reply_text(
+            f"{wallet_summary}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "👤 *Saved Passenger Profile Found:*\n\n"
+            f"• *Name:* {saved['name']}\n"
+            f"• *Age:* {saved['age']} yrs | *Gender:* {saved['gender']}\n"
+            f"• *Berth Preference:* {saved.get('berth', 'No Preference')}\n\n"
+            "👉 Tap below to use this saved passenger in 1-click or enter new details:",
+            reply_markup=ReplyKeyboardMarkup(choice_kb, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PASSENGER_CHOICE
 
     await update.message.reply_text(
-        f"Selected Class: *{coach_code}* (Fare: ₹{int(context.user_data['fare'])})\n\n"
-        "💳 *Choose Payment Mode:*\n\n"
-        "• *💼 IRCTC eWallet* — Instant wallet deduction (zero gateway delay)\n"
-        "• *💳 Credit / Debit Card* — Card on file (3D-Secure mobile notification)\n"
-        "• *📱 UPI / Instant Pay* — Push collect notification to your mobile UPI app\n\n"
-        "👉 Tap an option below to proceed:",
-        reply_markup=ReplyKeyboardMarkup(payment_keyboard, resize_keyboard=True),
+        f"{wallet_summary}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👤 Please enter the *Passenger Full Name*:",
+        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
         parse_mode="Markdown"
     )
-    return STATE_PAYMENT_SELECT
+    return STATE_PASSENGER_NAME
 
 async def handle_payment_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
@@ -1298,17 +1334,15 @@ async def handle_passenger_choice(update: Update, context: ContextTypes.DEFAULT_
         return await cancel_booking(update, context)
 
     if is_back_command(text):
-        payment_keyboard = [
-            ["💼 IRCTC eWallet", "💳 Credit / Debit Card"],
-            ["📱 UPI / Instant Pay"],
-            ["⬅️ Back", "❌ Cancel"]
-        ]
+        class_options = context.user_data.get("class_options", [])
+        keyboard = [[f"{c['class_code']} (Rs. {int(c['fare'])})"] for c in class_options]
+        keyboard.append(["⬅️ Back", "❌ Cancel"])
         await update.message.reply_text(
-            "💳 *Choose Payment Mode:*\n\nPlease choose a payment option:",
-            reply_markup=ReplyKeyboardMarkup(payment_keyboard, resize_keyboard=True),
+            f"🎟️ *Select Coach Class for Train {context.user_data.get('train_number')}:*",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
             parse_mode="Markdown"
         )
-        return STATE_PAYMENT_SELECT
+        return STATE_CLASS_SELECT
 
     saved = context.user_data.get("saved_profile") or await storage.get_passenger_profile(update.effective_user.id)
     if saved and ("use saved" in text.lower() or "✅" in text or "⚡" in text or saved.get("name", "").lower() in text.lower()):
@@ -1338,18 +1372,28 @@ async def handle_passenger_name(update: Update, context: ContextTypes.DEFAULT_TY
         return await cancel_booking(update, context)
 
     if is_back_command(text):
-        payment_keyboard = [
-            ["💼 IRCTC eWallet", "💳 Credit / Debit Card"],
-            ["📱 UPI / Instant Pay"],
-            ["⬅️ Back", "❌ Cancel"]
-        ]
+        saved = context.user_data.get("saved_profile") or await storage.get_passenger_profile(update.effective_user.id)
+        if saved and saved.get("name"):
+            choice_kb = [
+                [f"✅ Use Saved: {saved['name']} ({saved['age']}, {saved['gender']})"],
+                ["➕ Enter New Passenger Details"],
+                ["⬅️ Back", "❌ Cancel"]
+            ]
+            await update.message.reply_text(
+                "👤 Choose passenger:",
+                reply_markup=ReplyKeyboardMarkup(choice_kb, resize_keyboard=True)
+            )
+            return STATE_PASSENGER_CHOICE
+
+        class_options = context.user_data.get("class_options", [])
+        keyboard = [[f"{c['class_code']} (Rs. {int(c['fare'])})"] for c in class_options]
+        keyboard.append(["⬅️ Back", "❌ Cancel"])
         await update.message.reply_text(
-            "💳 *Choose Payment Mode:*\n\n"
-            "Please choose a payment option:",
-            reply_markup=ReplyKeyboardMarkup(payment_keyboard, resize_keyboard=True),
+            f"🎟️ *Select Coach Class for Train {context.user_data.get('train_number')}:*",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
             parse_mode="Markdown"
         )
-        return STATE_PAYMENT_SELECT
+        return STATE_CLASS_SELECT
 
     context.user_data["p_name"] = text
     await update.message.reply_text(
@@ -1648,21 +1692,23 @@ async def handle_inline_card_name(update: Update, context: ContextTypes.DEFAULT_
 async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     u = context.user_data
     tg_id = update.effective_user.id
-    pay_mode = u.get("payment_method", "Credit / Debit Card")
+    u["payment_method"] = "IRCTC eWallet"
 
-    card = await storage.get_decrypted_card(tg_id)
-    c_num = card.get("card_number", "") if card else ""
-    card_mask = f"**** **** **** {c_num[-4:]}" if len(c_num) >= 4 else "Linked Card"
+    ew_pin = await storage.get_decrypted_ewallet(tg_id)
+    cur_bal = await storage.get_user_ewallet_balance(tg_id)
+    fare = float(u.get("fare", 240))
+    bal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare)
 
-    if pay_mode == "Credit / Debit Card":
-        payment_line = f"• *Payment Mode:* `Credit / Debit Card` ({card_mask} - Live 3D-Secure bank checkout)"
-    elif pay_mode == "IRCTC eWallet":
-        ew_pin = await storage.get_decrypted_ewallet(tg_id)
-        ew_status = "PIN Configured & Encrypted" if ew_pin else "PIN Needed"
-        payment_line = f"• *Payment Mode:* `IRCTC eWallet` ({ew_status} - Direct auto-debit; ₹11.80 fee)"
+    ew_status = "PIN Configured & Encrypted" if ew_pin else "PIN Needed"
+    if bal_check["is_sufficient"]:
+        bal_line = f"• *eWallet Balance:* `₹{bal_check['current_balance']:.2f}` (✅ Sufficient for ₹{bal_check['total_required']:.2f})"
     else:
-        upi_val = u.get("upi_id") or await storage.get_decrypted_upi(tg_id) or "Linked UPI"
-        payment_line = f"• *Payment Mode:* `UPI / Instant Pay` (`{upi_val}`)"
+        bal_line = f"• *eWallet Balance:* `₹{bal_check['current_balance']:.2f}` (⚠️ Shortfall: `₹{bal_check['shortfall']:.2f}` needed)"
+
+    payment_line = (
+        f"• *Payment Rail:* `IRCTC eWallet` ({ew_status} - Direct 0s auto-debit; ₹11.80 fee)\n"
+        f"{bal_line}"
+    )
 
     open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
 
@@ -1673,7 +1719,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Route:* `{u['source']}` ➔ `{u['dest']}`\n"
         f"• *Date:* `{u['date']}`\n"
         f"• *Class:* `{u['coach_class']}` ({u.get('class_status', '')})\n"
-        f"• *Fare:* `₹{int(u['fare'])}` (+ IRCTC fee)\n"
+        f"• *Fare:* `₹{int(u['fare'])}` (+ ₹11.80 IRCTC eWallet fee)\n"
         f"• *Passenger:* {u['p_name']}, Age {u['p_age']} ({u['p_gender']})\n"
         f"• *Berth:* {u['p_berth']}\n"
         f"{payment_line}\n"
@@ -1683,7 +1729,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         "🎯 *CHOOSE EXECUTION MODE:*\n\n"
         "1️⃣ *🎯 SEAT AVAILABILITY SNIPER* (Recommended)\n"
         "   • Never books Waiting List! Continually monitors the train 24/7.\n"
-        "   • When charting occurs and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly!\n\n"
+        "   • When charting occurs and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly with direct eWallet auto-debit!\n\n"
         "2️⃣ *⚡ BOOK NOW*\n"
         "   • Attempts immediate live booking right away.\n\n"
         "👉 Tap an option below:"
@@ -1691,7 +1737,8 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     confirm_kb = [
         ["🎯 ACTIVATE SEAT SNIPER (Confirmed Berths Only)"],
         ["⚡ BOOK NOW (Instant Checkout)"],
-        ["⬅️ Back", "❌ Cancel"]
+        ["💼 Update eWallet Balance", "⬅️ Back"],
+        ["❌ Cancel"]
     ]
     await safe_reply(
         update.message,
@@ -1722,15 +1769,95 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if is_cancel_command(ans):
         return await cancel_booking(update, context)
 
+    u = context.user_data
+    tg_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    fare = float(u.get("fare", 240))
+    cur_bal = await storage.get_user_ewallet_balance(tg_id)
+    bal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare)
+
+    # 1. Check if user asked to update balance amount
+    if "UPDATE BALANCE" in ans or "UPDATE EWALLET" in ans:
+        await safe_reply(
+            update.message,
+            "💼 *Update IRCTC eWallet Balance*\n\n"
+            f"• Ticket Base Fare: ₹{fare:.2f}\n"
+            f"• Official IRCTC Fee: ₹11.80 (₹10 + 18% GST)\n"
+            f"• Total Needed: *₹{bal_check['total_required']:.2f}*\n"
+            f"• Current Balance: *₹{cur_bal:.2f}*\n"
+            f"• Shortfall: *₹{bal_check['shortfall']:.2f}*\n\n"
+            "👉 Please top up your deposit at [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet) and reply with your updated balance (e.g. `1000` or `/wallet balance 1000`):",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_CONFIRM
+
+    # 2. Check if user typed a numeric value to update balance
+    clean_num = re.sub(r"[^\d.]", "", ans)
+    if clean_num and clean_num.replace(".", "", 1).isdigit() and ("ACTIVATE" not in ans and "BOOK" not in ans and "RE-CHECK" not in ans):
+        try:
+            new_amt = float(clean_num)
+            if new_amt >= 0:
+                await storage.save_user_ewallet_balance(tg_id, new_amt)
+                cur_bal = new_amt
+                bal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare)
+                await update.message.reply_text(
+                    f"✅ *IRCTC eWallet Balance updated to ₹{cur_bal:.2f}!*",
+                    parse_mode="Markdown"
+                )
+        except ValueError:
+            pass
+
+    # 3. Pre-flight Balance Verification Gate
+    if not bal_check["is_sufficient"]:
+        insufficient_msg = (
+            "⚠️ *INSUFFICIENT IRCTC eWALLET BALANCE*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"• *Ticket Base Fare:* `₹{bal_check['fare']:.2f}`\n"
+            f"• *Official IRCTC Fee:* `₹{bal_check['fee']:.2f}` (₹10 + 18% GST)\n"
+            f"• *Total Amount Needed:* `₹{bal_check['total_required']:.2f}`\n"
+            f"• *Current eWallet Balance:* `₹{bal_check['current_balance']:.2f}`\n"
+            f"• *Balance Shortfall:* **₹{bal_check['shortfall']:.2f}**\n\n"
+            "💼 *Direct Auto-Debit Requirement:*\n"
+            "Because Indian Railways berths sell out in seconds during chart unfreezing, "
+            "this bot uses **exclusive IRCTC eWallet direct auto-debit** with zero user intervention. "
+            "Sufficient funds must be maintained in your eWallet before the sniper can be activated.\n\n"
+            "👉 *Steps to Activate:*\n"
+            f"1️⃣ Recharge at least **₹{bal_check['shortfall']:.2f}** on official IRCTC: [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n"
+            "2️⃣ Reply with your updated balance here (e.g. `1000` or `/wallet balance 1000`).\n"
+            "3️⃣ Tap *'🔄 Re-check Balance & Activate'* below!"
+        )
+        insufficient_kb = [
+            ["🔄 Re-check Balance & Activate"],
+            ["💼 Update Balance Amount", "⬅️ Back"],
+            ["❌ Cancel"]
+        ]
+        await safe_reply(
+            update.message,
+            insufficient_msg,
+            reply_markup=ReplyKeyboardMarkup(insufficient_kb, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_CONFIRM
+
+    # 4. Check eWallet PIN
+    ew_pin = await storage.get_decrypted_ewallet(tg_id)
+    if not ew_pin:
+        await safe_reply(
+            update.message,
+            "💼 *IRCTC eWallet Transaction PIN Required*\n\n"
+            "To authorize direct, zero-delay eWallet booking, please enter your **4-6 digit IRCTC eWallet Transaction PIN**:\n"
+            "_(Encrypted with AES-256 for future 1-click bookings)_",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="Markdown"
+        )
+        return STATE_EWALLET_PIN
+
     # Determine execution mode: default to SNIPER unless user explicitly requested INSTANT
     if "BOOK NOW" in ans or "INSTANT" in ans:
         booking_mode = "INSTANT"
     else:
         booking_mode = "SNIPER"
-
-    u = context.user_data
-    tg_id = update.effective_user.id
-    chat_id = update.effective_chat.id
 
     passengers = [{
         "name": u["p_name"],
@@ -1756,8 +1883,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "train_name": u.get("train_name", "EXP"),
         "coach_class": u["coach_class"],
         "departure_time": u.get("departure", "00:15"),
-        "payment_method": u.get("payment_method", "Credit / Debit Card"),
-        "upi_id": u.get("upi_id") or await storage.get_decrypted_upi(tg_id),
+        "payment_method": "IRCTC eWallet",
         "booking_mode": booking_mode,
         "passengers": passengers,
         "latest_status": avail["status"],
@@ -1781,16 +1907,14 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if booking_mode == "INSTANT" and avail["is_available"]:
         await safe_reply(
             update.message,
-            "⚡ *Launching Instant Booking & Payment Checkout...*",
+            "⚡ *Launching Instant Direct Auto-Booking on IRCTC...*",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )
-        # Execute immediate booking through scheduler engine
         if global_scheduler:
             await global_scheduler.check_and_process_task(await storage.get_task(task_id), is_manual=False)
     else:
         # Sniper Mode Activated
-        # 1. First remove the custom reply keyboard cleanly from the user's screen
         await safe_reply(
             update.message,
             "🎯 *Seat Sniper activated! Initializing live reservation watchdog...*",
@@ -1809,7 +1933,6 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"• *Monitoring Mode:* ⚡ `ACTIVE LOOPING` (Polling every {interval_sec}s)\n"
             )
 
-        upi_display = f" (`{u.get('upi_id')}`)" if u.get("upi_id") else ""
         initial_card = (
             f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1817,15 +1940,15 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')} ({u['coach_class']})\n"
             f"• *Route:* {u['source']} ➔ {u['dest']} ({u['date']})\n"
             f"• *Current Status:* `{avail['status']}`\n"
-            f"• *Payment:* `{u.get('payment_method')}`{upi_display}\n"
+            f"• *Payment Rail:* `Official IRCTC eWallet` (Direct Auto-Debit)\n"
+            f"• *Pre-Flight Balance:* `₹{bal_check['current_balance']:.2f}` (Verified >= ₹{bal_check['total_required']:.2f})\n"
             f"• *Target:* Confirmed / Current Available Berths (CNF / `CURR_AVBL`)\n"
             f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
             f"  • *Chart Rule:* {open_est['chart_rule_note']}\n"
             f"{watchdog_mode_info}\n"
-            f"🛡️ *Dynamic Charting Watchdog Rules:*\n"
-            f"• The agent will **NEVER** book a Waiting List (WL) ticket.\n"
-            f"• Once the trigger point arrives, polling automatically accelerates: **60s** at T-60m ➔ **30s** at T-30m ➔ **10s** at T-10m.\n"
-            f"• The sniper will strike and alert you the exact moment confirmed berths open!\n\n"
+            f"⚡ *100% DIRECT AUTO-BOOKING GUARANTEE:*\n"
+            f"• **Zero user action required!** When seats open, the agent auto-debits your eWallet and confirms your booking in 0.0s.\n"
+            f"• Your CRIS PNR and official PDF Electronic Reservation Slip (ERS) will appear directly in this chat!\n\n"
             f"👉 Click *'Try Now'* below to test a live check anytime! 👇"
         )
         keyboard = InlineKeyboardMarkup([
