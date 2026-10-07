@@ -884,17 +884,24 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         "*(Example: `KJM-MAS` or `MAS-NLR`)*"
     )
     kb = ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
-    try:
-        await update.message.reply_text(
-            welcome_msg,
-            parse_mode="Markdown",
-            reply_markup=kb
-        )
-    except Exception:
-        await update.message.reply_text(
-            welcome_msg.replace("*", "").replace("`", ""),
-            reply_markup=kb
-        )
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
+    msg = update.effective_message
+    if msg:
+        try:
+            await msg.reply_text(
+                welcome_msg,
+                parse_mode="Markdown",
+                reply_markup=kb
+            )
+        except Exception:
+            await msg.reply_text(
+                welcome_msg.replace("*", "").replace("`", ""),
+                reply_markup=kb
+            )
     return STATE_ROUTE
 
 def adjust_date(curr: datetime.date, delta_y: int = 0, delta_m: int = 0, delta_d: int = 0) -> datetime.date:

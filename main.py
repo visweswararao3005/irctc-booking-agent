@@ -83,16 +83,37 @@ async def run_bot():
     ROUTE_PATTERN = re.compile(r"^[A-Za-z]{2,6}\s*(?:->|➔|TO|-|–|/|\s)\s*[A-Za-z]{2,6}$", re.IGNORECASE)
     TRAIN_PATTERN = re.compile(r"^\d{5}\s*-", re.IGNORECASE)
 
-    # 1. Booking Conversation Handler
-    booking_conv = ConversationHandler(
+    # Unified Master Conversation Handler
+    # Unifies Booking, Passenger Profile, IRCTC Credentials, and e-Wallet flows.
+    # Prevents state collisions where an in-flight flow intercepts profile or credential updates.
+    main_conv = ConversationHandler(
         entry_points=[
+            # 1. Booking flow entry points
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.start_booking),
+            CommandHandler("sniper", bot.start_booking),
             MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
             MessageHandler(filters.Regex(ROUTE_PATTERN), bot.handle_route),
             MessageHandler(filters.Regex(TRAIN_PATTERN), bot.handle_out_of_state_train_selection),
+            CallbackQueryHandler(bot.start_booking, pattern=r"^info_start_booking$"),
+
+            # 2. Account setup entry points
+            CommandHandler("change_account", bot.start_change_account),
+            CommandHandler("set_account", bot.start_change_account),
+
+            # 3. Wallet setup entry points
+            CommandHandler("change_wallet", bot.start_change_wallet),
+            CommandHandler("set_wallet", bot.start_change_wallet),
+
+            # 4. Profile setup entry points
+            CommandHandler("create_profile", bot.start_create_profile),
+            CommandHandler("set_profile", bot.start_create_profile),
+            CommandHandler("new_profile", bot.start_create_profile),
+            CommandHandler("add_passenger", bot.start_create_profile),
+            CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
         ],
         states={
+            # Booking flow states
             bot.STATE_ROUTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_route)],
             bot.STATE_DATE: [
                 CallbackQueryHandler(bot.handle_date_calendar_callback, pattern=r"^cal_"),
@@ -110,70 +131,15 @@ async def run_bot():
             bot.STATE_IRCTC_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_irctc_pass)],
             bot.STATE_EWALLET_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_inline_ewallet_pin)],
             bot.STATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_confirm)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", bot.cancel_booking),
-            CommandHandler("start", bot.start_booking),
-            CommandHandler("book", bot.start_booking),
-            CommandHandler("info", bot.cmd_info),
-            CommandHandler("task", bot.cmd_tasks),
-            CommandHandler("tasks", bot.cmd_tasks),
-            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
-        ],
-        allow_reentry=True
-    )
 
-    # 2. Account Setup/Change Conversation Handler
-    account_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("change_account", bot.start_change_account),
-            CommandHandler("set_account", bot.start_change_account),
-        ],
-        states={
+            # Account setup states
             bot.STATE_SET_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_user)],
             bot.STATE_SET_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_pass)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", bot.cancel_booking),
-            CommandHandler("start", bot.start_booking),
-            CommandHandler("book", bot.start_booking),
-            CommandHandler("info", bot.cmd_info),
-            CommandHandler("task", bot.cmd_tasks),
-            CommandHandler("tasks", bot.cmd_tasks),
-        ],
-        allow_reentry=True
-    )
 
-    # 3. IRCTC eWallet Setup/Change Conversation Handler
-    wallet_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("change_wallet", bot.start_change_wallet),
-            CommandHandler("set_wallet", bot.start_change_wallet),
-        ],
-        states={
+            # Wallet setup states
             bot.STATE_SET_WALLET_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_set_wallet_pin)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", bot.cancel_booking),
-            CommandHandler("start", bot.start_booking),
-            CommandHandler("book", bot.start_booking),
-            CommandHandler("info", bot.cmd_info),
-            CommandHandler("task", bot.cmd_tasks),
-            CommandHandler("tasks", bot.cmd_tasks),
-        ],
-        allow_reentry=True
-    )
 
-    # 4. Standalone Passenger Profile Setup Conversation Handler (/create_profile)
-    profile_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("create_profile", bot.start_create_profile),
-            CommandHandler("set_profile", bot.start_create_profile),
-            CommandHandler("new_profile", bot.start_create_profile),
-            CommandHandler("add_passenger", bot.start_create_profile),
-            CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
-        ],
-        states={
+            # Standalone Profile setup states (/create_profile)
             bot.STATE_PROF_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_create_profile_name)],
             bot.STATE_PROF_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_create_profile_age)],
             bot.STATE_PROF_GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_create_profile_gender)],
@@ -183,19 +149,40 @@ async def run_bot():
             CommandHandler("cancel", bot.cancel_booking),
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.start_booking),
-            CommandHandler("info", bot.cmd_info),
+            CommandHandler("sniper", bot.start_booking),
+            CommandHandler("create_profile", bot.start_create_profile),
+            CommandHandler("set_profile", bot.start_create_profile),
+            CommandHandler("new_profile", bot.start_create_profile),
+            CommandHandler("add_passenger", bot.start_create_profile),
+            CommandHandler("change_account", bot.start_change_account),
+            CommandHandler("set_account", bot.start_change_account),
+            CommandHandler("change_wallet", bot.start_change_wallet),
+            CommandHandler("set_wallet", bot.start_change_wallet),
             CommandHandler("profile", bot.cmd_profile),
+            CommandHandler("passenger", bot.cmd_profile),
+            CommandHandler("account", bot.cmd_account),
+            CommandHandler("wallet", bot.cmd_wallet),
+            CommandHandler("ewallet", bot.cmd_wallet),
+            CommandHandler("balance", bot.cmd_wallet),
+            CommandHandler("reset_profile", bot.cmd_reset_profile),
+            CommandHandler("reset_account", bot.cmd_reset_account),
+            CommandHandler("reset_wallet", bot.cmd_reset_wallet),
+            CommandHandler("info", bot.cmd_info),
+            CommandHandler("help", bot.cmd_help),
             CommandHandler("task", bot.cmd_tasks),
             CommandHandler("tasks", bot.cmd_tasks),
+            CommandHandler("verify", bot.cmd_verify_pnr),
+            CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
+            CallbackQueryHandler(bot.start_booking, pattern=r"^info_start_booking$"),
+            CallbackQueryHandler(bot.cmd_profile, pattern=r"^info_view_profile$"),
+            CallbackQueryHandler(bot.cmd_tasks, pattern=r"^info_view_tasks$"),
+            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
         ],
         allow_reentry=True
     )
 
     # Register handlers
-    app.add_handler(booking_conv)
-    app.add_handler(account_conv)
-    app.add_handler(wallet_conv)
-    app.add_handler(profile_conv)
+    app.add_handler(main_conv)
     app.add_handler(CommandHandler("start", bot.start_booking))
     app.add_handler(CommandHandler("book", bot.start_booking))
     app.add_handler(CommandHandler("sniper", bot.start_booking))

@@ -763,6 +763,58 @@ async def run_tests():
     print("   • Regret / No More Booking Status: Accurately handled as unavailable")
     print("✅ Comprehensive Indian Railways Edge Cases & Guardrails: PASSED")
 
+    # 19. Test Multi-Flow State Isolation & Seamless Re-entry (/create_profile flow)
+    print("\n[Test 19] Testing Multi-Flow State Isolation & Seamless Re-entry (/create_profile flow)...")
+    from telegram.ext import ConversationHandler
+
+    mock_msg_19 = MockTelegramMessage()
+    mock_msg_19.text = ""
+    mock_upd_19 = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id, "first_name": "Lucky"})(),
+        "effective_message": mock_msg_19,
+        "message": mock_msg_19,
+        "callback_query": None
+    })()
+    mock_ctx_19 = type("MockContext", (), {"user_data": {}})()
+
+    # Step 1: User sends /start
+    res_start = await bot.start_booking(mock_upd_19, mock_ctx_19)
+    assert res_start == bot.STATE_ROUTE, f"Expected STATE_ROUTE, got {res_start}"
+
+    # Step 2: User triggers profile creation (taps button or /create_profile)
+    res_prof_start = await bot.start_create_profile(mock_upd_19, mock_ctx_19)
+    assert res_prof_start == bot.STATE_PROF_NAME, f"Expected STATE_PROF_NAME, got {res_prof_start}"
+
+    # Step 3: User submits Passenger Name "Visweswara Rao"
+    mock_msg_19.text = "Visweswara Rao"
+    res_name = await bot.handle_create_profile_name(mock_upd_19, mock_ctx_19)
+    assert res_name == bot.STATE_PROF_AGE, f"Expected STATE_PROF_AGE, got {res_name}"
+    assert mock_ctx_19.user_data.get("prof_name") == "Visweswara Rao"
+
+    # Step 4: User submits Passenger Age "25"
+    mock_msg_19.text = "25"
+    res_age = await bot.handle_create_profile_age(mock_upd_19, mock_ctx_19)
+    assert res_age == bot.STATE_PROF_GENDER, f"Expected STATE_PROF_GENDER, got {res_age}"
+    assert mock_ctx_19.user_data.get("prof_age") == 25
+
+    # Step 5: User selects Passenger Gender "Male"
+    mock_msg_19.text = "Male"
+    res_gender = await bot.handle_create_profile_gender(mock_upd_19, mock_ctx_19)
+    assert res_gender == bot.STATE_PROF_BERTH, f"Expected STATE_PROF_BERTH, got {res_gender}"
+    assert mock_ctx_19.user_data.get("prof_gender") == "M"
+
+    # Step 6: User selects Berth Preference "Lower Berth (LB)"
+    mock_msg_19.text = "Lower Berth (LB)"
+    res_berth = await bot.handle_create_profile_berth(mock_upd_19, mock_ctx_19)
+    assert res_berth == ConversationHandler.END, f"Expected ConversationHandler.END, got {res_berth}"
+
+    saved_p = await storage.get_passenger_profile(test_user_id)
+    assert saved_p is not None and saved_p["name"] == "Visweswara Rao"
+    assert saved_p["age"] == 25 and saved_p["gender"] == "M" and saved_p["berth"] == "Lower Berth (LB)"
+    print("   • Start Booking (STATE_ROUTE) -> Profile Create (STATE_PROF_NAME): Seamless Re-entry Verified")
+    print(f"   • Passenger Profile Successfully Saved: {saved_p['name']} ({saved_p['age']}, {saved_p['gender']}, {saved_p['berth']})")
+    print("✅ Multi-Flow State Isolation & Seamless Re-entry: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)
