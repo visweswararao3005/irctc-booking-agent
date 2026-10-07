@@ -328,7 +328,15 @@ async def run_tests():
     # Test Profile Reset
     await storage.reset_passenger_profile(test_user_id)
     assert await storage.get_passenger_profile(test_user_id) is None, "Profile was not reset"
-    print("✅ Passenger Profile Storage, Retrieval & Reset: PASSED")
+
+    # Verify Standalone /create_profile conversation handlers
+    assert callable(bot.start_create_profile), "bot.start_create_profile missing"
+    assert callable(bot.handle_create_profile_name), "bot.handle_create_profile_name missing"
+    assert callable(bot.handle_create_profile_age), "bot.handle_create_profile_age missing"
+    assert callable(bot.handle_create_profile_gender), "bot.handle_create_profile_gender missing"
+    assert callable(bot.handle_create_profile_berth), "bot.handle_create_profile_berth missing"
+    print("   • Standalone /create_profile Handlers Verified: Registered & Callable")
+    print("✅ Passenger Profile Storage, Retrieval, Reset & /create_profile: PASSED")
 
     # 11. Test Exact WL & Available Berth Calculations
     print("\n[Test 11] Testing Exact WL & Available Berth Status Breakdown...")

@@ -164,13 +164,45 @@ async def run_bot():
         allow_reentry=True
     )
 
+    # 4. Standalone Passenger Profile Setup Conversation Handler (/create_profile)
+    profile_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("create_profile", bot.start_create_profile),
+            CommandHandler("set_profile", bot.start_create_profile),
+            CommandHandler("new_profile", bot.start_create_profile),
+            CommandHandler("add_passenger", bot.start_create_profile),
+            CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
+        ],
+        states={
+            bot.STATE_PROF_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_create_profile_name)],
+            bot.STATE_PROF_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_create_profile_age)],
+            bot.STATE_PROF_GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_create_profile_gender)],
+            bot.STATE_PROF_BERTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_create_profile_berth)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", bot.cancel_booking),
+            CommandHandler("start", bot.start_booking),
+            CommandHandler("book", bot.start_booking),
+            CommandHandler("info", bot.cmd_info),
+            CommandHandler("profile", bot.cmd_profile),
+            CommandHandler("task", bot.cmd_tasks),
+            CommandHandler("tasks", bot.cmd_tasks),
+        ],
+        allow_reentry=True
+    )
+
     # Register handlers
     app.add_handler(booking_conv)
     app.add_handler(account_conv)
     app.add_handler(wallet_conv)
+    app.add_handler(profile_conv)
     app.add_handler(CommandHandler("start", bot.start_booking))
     app.add_handler(CommandHandler("book", bot.start_booking))
     app.add_handler(CommandHandler("sniper", bot.start_booking))
+    app.add_handler(CommandHandler("create_profile", bot.start_create_profile))
+    app.add_handler(CommandHandler("set_profile", bot.start_create_profile))
+    app.add_handler(CommandHandler("new_profile", bot.start_create_profile))
+    app.add_handler(CommandHandler("add_passenger", bot.start_create_profile))
     app.add_handler(CommandHandler("info", bot.cmd_info))
     app.add_handler(CommandHandler("help", bot.cmd_help))
     app.add_handler(CommandHandler("task", bot.cmd_tasks))

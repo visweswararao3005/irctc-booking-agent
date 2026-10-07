@@ -52,6 +52,9 @@ STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME 
 # Conversation States for Standalone Wallet Setup/Change
 STATE_SET_WALLET_PIN = 25
 
+# Conversation States for Standalone Profile Setup (/create_profile)
+STATE_PROF_NAME, STATE_PROF_AGE, STATE_PROF_GENDER, STATE_PROF_BERTH = range(26, 30)
+
 
 # ----------------- Safe Messaging Helper -----------------
 
@@ -139,6 +142,168 @@ async def handle_set_pass(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "You can now book tickets anytime using `/start` or `hi`.",
         parse_mode="Markdown"
     )
+    return ConversationHandler.END
+ 
+# ----------------- Passenger Profile Setup Handlers (/create_profile) -----------------
+
+async def start_create_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Begins the standalone passenger profile creation conversation."""
+    context.user_data.clear()
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
+    msg = update.effective_message
+    if msg:
+        await msg.reply_text(
+            "👤 *Create Default Passenger Profile*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Please enter the *Passenger Full Name*:\n"
+            "• Letters and spaces only (Indian Railways PRS rule)\n"
+            "• Length: 2 to 16 characters\n\n"
+            "*(Example: `Visweswara Rao` or `Balaji P`)*",
+            reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+    return STATE_PROF_NAME
+
+async def handle_create_profile_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    clean_name = re.sub(r"[^A-Za-z\s.]", "", text).strip()
+    if len(clean_name) < 2 or len(clean_name) > 16 or not re.match(r"^[A-Za-z\s.]+$", text):
+        await update.message.reply_text(
+            "❌ *Invalid Passenger Name!*\n\n"
+            "• Indian Railways rules require names to contain **letters and spaces only**.\n"
+            "• Length must be between **2 and 16 characters**.\n\n"
+            "👉 Please enter a valid name (e.g. `Balaji P` or `Suresh Kumar`):",
+            reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PROF_NAME
+
+    context.user_data["prof_name"] = clean_name
+    await update.message.reply_text(
+        f"Selected Name: *{clean_name}*\n\n"
+        "Now enter passenger *Age* (1 to 120):",
+        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_PROF_AGE
+
+async def handle_create_profile_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+    if is_back_command(text):
+        return await start_create_profile(update, context)
+
+    try:
+        age = int(text)
+        if age < 1 or age > 120:
+            raise ValueError
+        context.user_data["prof_age"] = age
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Please enter a valid age as a whole number between **1 and 120**:",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PROF_AGE
+
+    gender_keyboard = [
+        ["Male", "Female", "Transgender"],
+        ["⬅️ Back", "❌ Cancel"]
+    ]
+    await update.message.reply_text(
+        "Select passenger *Gender*:",
+        reply_markup=ReplyKeyboardMarkup(gender_keyboard, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_PROF_GENDER
+
+async def handle_create_profile_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+    if is_back_command(text):
+        clean_name = context.user_data.get("prof_name", "Passenger")
+        await update.message.reply_text(
+            f"Selected Name: *{clean_name}*\n\nNow enter passenger *Age* (1 to 120):",
+            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PROF_AGE
+
+    g_char = text[0].upper()
+    if g_char not in ["M", "F", "T"]:
+        await update.message.reply_text("❌ Please select one of the gender options from the keyboard:")
+        return STATE_PROF_GENDER
+
+    context.user_data["prof_gender"] = g_char
+
+    berth_keyboard = [
+        ["Lower Berth (LB)", "Middle Berth (MB)"],
+        ["Upper Berth (UB)", "Side Lower (SL)"],
+        ["Side Upper (SU)", "No Preference"],
+        ["⬅️ Back", "❌ Cancel"]
+    ]
+    await update.message.reply_text(
+        "Select *Berth Preference*:",
+        reply_markup=ReplyKeyboardMarkup(berth_keyboard, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+    return STATE_PROF_BERTH
+
+async def handle_create_profile_berth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+    if is_back_command(text):
+        gender_keyboard = [
+            ["Male", "Female", "Transgender"],
+            ["⬅️ Back", "❌ Cancel"]
+        ]
+        await update.message.reply_text(
+            "Select passenger *Gender*:",
+            reply_markup=ReplyKeyboardMarkup(gender_keyboard, resize_keyboard=True),
+            parse_mode="Markdown"
+        )
+        return STATE_PROF_GENDER
+
+    name = context.user_data.get("prof_name", "Passenger")
+    age = context.user_data.get("prof_age", 25)
+    gender = context.user_data.get("prof_gender", "M")
+    berth = text
+
+    tg_id = update.effective_user.id
+    await storage.save_passenger_profile(tg_id, name, age, gender, berth)
+
+    gender_full = "Male" if gender == "M" else ("Female" if gender == "F" else "Transgender")
+    card = (
+        "✅ *PASSENGER PROFILE CREATED SUCCESSFULLY!*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"• *Full Name:* `{name}`\n"
+        f"• *Age:* `{age}` years\n"
+        f"• *Gender:* `{gender_full}`\n"
+        f"• *Berth Preference:* `{berth}`\n\n"
+        "✨ *1-Click Booking Advantage:*\n"
+        "Your passenger details are securely saved for this chat! When you book any train, the bot will auto-select this profile in 1 tap without asking for traveler details again.\n\n"
+        "👉 You can view anytime with `/profile` or start booking with `/book`."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚆 Start Booking Now", callback_data="info_start_booking")],
+        [InlineKeyboardButton("👤 View Full Profile", callback_data="info_view_profile")]
+    ])
+    await update.message.reply_text(
+        card,
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+    await safe_reply(update.message, "👇 Quick Actions:", reply_markup=kb, parse_mode="Markdown")
     return ConversationHandler.END
 
 # ----------------- Payment Card Management Handlers -----------------
@@ -511,13 +676,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/reset_account` — Permanently delete your IRCTC login credentials from this chat.\n\n"
         "👤 *PASSENGER PROFILE:*\n"
         "• `/profile` (or `/passenger`) — View your saved default passenger profile & e-Wallet summary.\n"
+        "• `/create_profile` (or `/set_profile`) — Setup or update default traveler details (Name, Age, Gender, Berth).\n"
         "• `/reset_profile` — Erase all saved profile data (passenger, credentials, wallet) to start fresh.\n\n"
         "🔍 *SYSTEM & VERIFICATION:*\n"
         "• `/info` — Comprehensive end-to-end architectural guide & official IRCTC charting rules.\n"
         "• `/help` — Display this full command directory and usage instructions.\n"
         "• `/verify <pnr>` — Live verification of any 10-digit Indian Railways CRIS PNR against PRS network.\n\n"
         "💡 *PRO-TIP FOR INSTANT BOOKINGS:*\n"
-        "Keep your IRCTC account linked (`/change_account`), eWallet PIN set (`/change_wallet`), and balance updated (`/wallet balance <amount>`). When seats release, booking completes automatically in 0 seconds with zero intervention!"
+        "Keep your IRCTC account linked (`/change_account`), default passenger saved (`/create_profile`), and balance updated (`/wallet balance <amount>`). When seats release, booking completes automatically in 0 seconds with zero intervention!"
     )
     keyboard = InlineKeyboardMarkup([
         [
@@ -632,7 +798,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p_line = (
         f"• *Default Passenger:* {passenger['name']} ({passenger['age']} yrs, {passenger['gender']}, {passenger.get('berth', 'No Preference')})\n"
         if passenger and passenger.get("name")
-        else "• *Default Passenger:* Not saved yet\n"
+        else "• *Default Passenger:* Not saved yet (Use `/create_profile` to set)\n"
     )
 
     acc_line = (
@@ -659,14 +825,17 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👉 Need to update or reset any details? Use the buttons below:"
     )
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚆 Start Booking", callback_data="info_start_booking")],
-        [
-            InlineKeyboardButton("🔄 Reset Passenger", callback_data="reset_profile_passenger"),
-            InlineKeyboardButton("🔐 Reset IRCTC", callback_data="reset_profile_irctc"),
-            InlineKeyboardButton("💼 Reset e-Wallet", callback_data="reset_profile_wallet")
-        ]
+    kb_buttons = [
+        [InlineKeyboardButton("🚆 Start Booking", callback_data="info_start_booking")]
+    ]
+    if not (passenger and passenger.get("name")):
+        kb_buttons.append([InlineKeyboardButton("👤 Create Passenger Profile", callback_data="btn_create_profile")])
+    kb_buttons.append([
+        InlineKeyboardButton("🔄 Reset Passenger", callback_data="reset_profile_passenger"),
+        InlineKeyboardButton("🔐 Reset IRCTC", callback_data="reset_profile_irctc"),
+        InlineKeyboardButton("💼 Reset e-Wallet", callback_data="reset_profile_wallet")
     ])
+    kb = InlineKeyboardMarkup(kb_buttons)
     await safe_reply(update.effective_message, msg, reply_markup=kb, parse_mode="Markdown")
 
 async def cmd_reset_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2079,6 +2248,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await storage.reset_user_ewallet(update.effective_user.id)
         try:
             await query.answer("IRCTC e-Wallet PIN removed!", show_alert=True)
+        except Exception:
+            pass
+        return await cmd_profile(update, context)
+
+    elif data == "btn_create_profile":
+        return await start_create_profile(update, context)
+
+    elif data == "info_view_profile":
+        try:
+            await query.answer()
         except Exception:
             pass
         return await cmd_profile(update, context)
