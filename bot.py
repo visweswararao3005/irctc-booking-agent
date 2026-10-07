@@ -947,11 +947,13 @@ async def proceed_to_train_search(update: Update, context: ContextTypes.DEFAULT_
         )
         return STATE_DATE
 
-    msg = f"🚆 *Available Trains on {date_str} (Earliest First):*\n\n"
+    msg = f"🚆 *Available Trains on {date_str} (Earliest Departure First):*\n\n"
     keyboard = []
     for t in trains:
         c_str = ", ".join(t.get("classes", []))
-        msg += f"• `{t['number']}` - *{t['name']}*\n  🕒 Departs: `{t['departure']}` ➔ Arrives: `{t['arrival']}` ({t['duration']})\n  🎫 Classes: `{c_str}`\n\n"
+        to_stn = t.get("to_station", "")
+        dest_tag = f" ({to_stn})" if to_stn else ""
+        msg += f"• `{t['number']}` - *{t['name']}*\n  🕒 Departs: `{t['departure']}` ➔ Arrives: `{t['arrival']}`{dest_tag} • ⏱ `{t['duration']}`\n  🎫 Classes: `{c_str}`\n\n"
         keyboard.append([f"{t['number']} - {t['name']} ({t['departure']})"])
 
     keyboard.append(["⬅️ Back", "❌ Cancel"])

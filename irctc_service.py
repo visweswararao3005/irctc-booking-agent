@@ -103,6 +103,18 @@ class IRCTCService:
                 "prediction": prediction
             }
 
+        # 4. Uncached / Unreserved / Live PRS query needed (None, empty, or uncached)
+        if not raw_avl or raw_upper in ["NONE", "", "NA", "NULL", "UNCACHED"]:
+            return {
+                "is_available": False,
+                "status": "UNCACHED / CHECK PRS (May be Unreserved UTS)",
+                "display_status": "CHECK PRS",
+                "seats": 0,
+                "wl_count": 0,
+                "fare": fare,
+                "prediction": prediction or "Check Live PRS"
+            }
+
         return {
             "is_available": False,
             "status": str(raw_avl),
@@ -182,12 +194,16 @@ class IRCTCService:
                         )
                         self.inventory[t_key][c_code] = parsed
 
+                    to_stn = str(t.get("toStnCode") or dst).strip().upper()
+                    from_stn = str(t.get("fromStnCode") or src).strip().upper()
                     t_dict = {
                         "number": num,
                         "name": name,
                         "departure": dep,
                         "arrival": arr,
                         "duration": dur_str,
+                        "from_station": from_stn,
+                        "to_station": to_stn,
                         "classes": avl_classes or ["SL", "3A", "2A"],
                         "fares": train_fares,
                         "quotas": {}
@@ -274,12 +290,16 @@ class IRCTCService:
                     priority = ["1A", "2A", "3A", "CC", "EC", "SL", "2S"]
                     classes.sort(key=lambda c: priority.index(c) if c in priority else 99)
 
+                    to_stn = f[9].strip().upper() if len(f) > 9 and f[9].strip() else dst
+                    from_stn = f[7].strip().upper() if len(f) > 7 and f[7].strip() else src
                     t_dict = {
                         "number": num,
                         "name": name,
                         "departure": dep,
                         "arrival": arr,
                         "duration": dur_raw,
+                        "from_station": from_stn,
+                        "to_station": to_stn,
                         "classes": classes or ["SL", "3A", "2A", "2S"],
                         "fares": train_fares,
                         "quotas": class_quotas
