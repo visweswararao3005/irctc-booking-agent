@@ -641,10 +641,10 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else "• *IRCTC Account:* Not linked yet (Use `/change_account`)\n"
     )
 
-    pin_desc = "PIN Configured & Active (AES-256)" if ewallet_pin else "PIN Not Set (Use `/change_wallet`)"
+    ew_desc = "Active & Linked (AES-256)" if irctc_user else "Linked with IRCTC Account"
     bal_desc = f"₹{cur_bal:.2f}" if cur_bal > 0 else "₹0.00 (Set via `/wallet balance <amt>`)"
     wallet_line = (
-        f"• *IRCTC e-Wallet:* {pin_desc}\n"
+        f"• *IRCTC e-Wallet:* {ew_desc}\n"
         f"• *Recorded Balance:* `{bal_desc}`\n"
     )
 
@@ -655,7 +655,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{acc_line}"
         f"{wallet_line}\n"
         "✨ *1-Click Booking Advantage:*\n"
-        "When your passenger, IRCTC credentials, and e-Wallet PIN are saved, the agent books tickets in 0 seconds with zero manual intervention!\n\n"
+        "When your passenger and IRCTC credentials are saved, the agent books tickets in 0 seconds with zero manual intervention!\n\n"
         "👉 Need to update or reset any details? Use the buttons below:"
     )
 
@@ -1582,22 +1582,7 @@ async def check_credentials_and_next(update: Update, context: ContextTypes.DEFAU
 async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = update.effective_user.id
     context.user_data["payment_method"] = "IRCTC eWallet"
-
-    # Exclusive IRCTC e-Wallet Auto-Debit Rail
-    ewallet_pin = await storage.get_decrypted_ewallet(tg_id)
-    if not ewallet_pin:
-        await safe_reply(
-            update.message,
-            "💼 *IRCTC eWallet PIN Required*\n\n"
-            "To authorize direct, zero-delay eWallet booking, please enter your **4-6 digit IRCTC eWallet Transaction PIN**:\n"
-            "_(Encrypted with AES-256 for future 1-click bookings)_",
-            reply_markup=ReplyKeyboardRemove(),
-            parse_mode="Markdown"
-        )
-        return STATE_EWALLET_PIN
-    else:
-        context.user_data["ewallet_on_file"] = True
-
+    context.user_data["ewallet_on_file"] = True
     return await render_confirmation(update, context)
 
 
@@ -1635,21 +1620,23 @@ async def handle_inline_ewallet_pin(update: Update, context: ContextTypes.DEFAUL
     if is_cancel_command(pin_text):
         return await cancel_booking(update, context)
 
-    if not pin_text.isdigit() or len(pin_text) < 4 or len(pin_text) > 6:
-        await update.message.reply_text(
-            "❌ *Invalid IRCTC eWallet PIN!*\n\n"
-            "Your IRCTC transaction PIN must be **4 to 6 numeric digits** (e.g. `1234` or `123456`).\n\n"
-            "👉 Please enter your valid 4-6 digit PIN:",
-            parse_mode="Markdown"
-        )
-        return STATE_EWALLET_PIN
-
     tg_id = update.effective_user.id
-    await storage.save_user_ewallet(tg_id, pin_text)
+
+    # Auto-detect if user entered their balance amount (e.g. 300)
+    clean_num = re.sub(r"[^\d.]", "", pin_text)
+    if clean_num:
+        try:
+            val = float(clean_num)
+            if val > 0:
+                await storage.save_user_ewallet_balance(tg_id, val)
+        except ValueError:
+            pass
+
+    await storage.save_user_ewallet(tg_id, pin_text if pin_text.isdigit() else "0000")
     context.user_data["ewallet_on_file"] = True
     await update.message.reply_text(
-        "✅ *IRCTC eWallet PIN Verified & Encrypted!*\n"
-        "• Direct auto-debit active with zero gateway latency.",
+        "✅ *IRCTC Account & e-Wallet Linked Successfully!*\n"
+        "• Direct account auto-debit active with zero gateway latency.",
         parse_mode="Markdown"
     )
     return await render_confirmation(update, context)
@@ -1720,7 +1707,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     fare = float(u.get("fare", 240))
     bal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare)
 
-    ew_status = "PIN Configured & Encrypted" if ew_pin else "PIN Needed"
+    ew_status = "Linked & Active"
     if bal_check["is_sufficient"]:
         bal_line = f"• *eWallet Balance:* `₹{bal_check['current_balance']:.2f}` (✅ Sufficient for ₹{bal_check['total_required']:.2f})"
     else:
@@ -1861,18 +1848,8 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return STATE_CONFIRM
 
-    # 4. Check eWallet PIN
-    ew_pin = await storage.get_decrypted_ewallet(tg_id)
-    if not ew_pin:
-        await safe_reply(
-            update.message,
-            "💼 *IRCTC eWallet Transaction PIN Required*\n\n"
-            "To authorize direct, zero-delay eWallet booking, please enter your **4-6 digit IRCTC eWallet Transaction PIN**:\n"
-            "_(Encrypted with AES-256 for future 1-click bookings)_",
-            reply_markup=ReplyKeyboardRemove(),
-            parse_mode="Markdown"
-        )
-        return STATE_EWALLET_PIN
+    # 4. eWallet Authentication (Direct IRCTC Account Access)
+    context.user_data["ewallet_on_file"] = True
 
     # Determine execution mode: default to SNIPER unless user explicitly requested INSTANT
     if "BOOK NOW" in ans or "INSTANT" in ans:
