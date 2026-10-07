@@ -206,39 +206,129 @@ async def get_user_ewallet_balance(telegram_id: int) -> float:
 
 # ----------------- Passenger Profile Management -----------------
 
-async def save_passenger_profile(
-    telegram_id: int, name: str, age: int, gender: str, berth: str
-) -> None:
-    """Save persistent default passenger profile for a specific Telegram chat."""
+async def get_passenger_profiles(telegram_id: int) -> List[Dict[str, Any]]:
+    """Retrieve list of all saved passenger profiles for a specific Telegram chat."""
+    user = await get_user(telegram_id)
+    if not user:
+        return []
+    if "passenger_profiles" in user and isinstance(user["passenger_profiles"], list):
+        return [p for p in user["passenger_profiles"] if isinstance(p, dict) and p.get("name")]
+    if "passenger_profile" in user and isinstance(user["passenger_profile"], dict) and user["passenger_profile"].get("name"):
+        return [user["passenger_profile"]]
+    return []
+
+async def add_passenger_profile(
+    telegram_id: int, name: str, age: int, gender: str, berth: str, set_as_primary: bool = False
+) -> List[Dict[str, Any]]:
+    """Adds a new passenger to the user's master list without overwriting existing ones."""
     async with _lock:
         users = _read_json_sync(USERS_FILE)
         user_key = str(telegram_id)
         if user_key not in users:
             users[user_key] = {"telegram_id": telegram_id}
-        users[user_key]["passenger_profile"] = {
-            "name": name.strip(),
-            "age": int(age),
-            "gender": gender.strip(),
-            "berth": berth.strip()
-        }
+
+        existing_profiles = []
+        if "passenger_profiles" in users[user_key] and isinstance(users[user_key]["passenger_profiles"], list):
+            existing_profiles = [p for p in users[user_key]["passenger_profiles"] if isinstance(p, dict)]
+        elif "passenger_profile" in users[user_key] and isinstance(users[user_key]["passenger_profile"], dict):
+            existing_profiles = [users[user_key]["passenger_profile"]]
+
+        clean_name = name.strip()
+        matched_idx = -1
+        for idx, p in enumerate(existing_profiles):
+            if p.get("name", "").lower() == clean_name.lower():
+                p["name"] = clean_name
+                p["age"] = int(age)
+                p["gender"] = gender.strip()
+                p["berth"] = berth.strip()
+                matched_idx = idx
+                break
+
+        if matched_idx == -1:
+            new_prof = {
+                "id": f"p_{len(existing_profiles)+1}",
+                "name": clean_name,
+                "age": int(age),
+                "gender": gender.strip(),
+                "berth": berth.strip()
+            }
+            if set_as_primary:
+                existing_profiles.insert(0, new_prof)
+                for i, p in enumerate(existing_profiles):
+                    p["id"] = f"p_{i+1}"
+            else:
+                existing_profiles.append(new_prof)
+        else:
+            if set_as_primary and matched_idx > 0:
+                p = existing_profiles.pop(matched_idx)
+                existing_profiles.insert(0, p)
+                for i, p_item in enumerate(existing_profiles):
+                    p_item["id"] = f"p_{i+1}"
+
+        users[user_key]["passenger_profiles"] = existing_profiles
+        if set_as_primary and existing_profiles:
+            users[user_key]["passenger_profile"] = existing_profiles[0]
+        elif "passenger_profile" not in users[user_key] and existing_profiles:
+            users[user_key]["passenger_profile"] = existing_profiles[0]
+
         _write_json_sync(USERS_FILE, users)
+        return existing_profiles
 
-async def get_passenger_profile(telegram_id: int) -> Optional[Dict[str, Any]]:
-    """Retrieve saved default passenger profile for a specific Telegram chat."""
-    user = await get_user(telegram_id)
-    if not user or "passenger_profile" not in user:
-        return None
-    return user.get("passenger_profile")
+async def save_passenger_profile(
+    telegram_id: int, name: str, age: int, gender: str, berth: str
+) -> None:
+    """Save persistent passenger profile for a specific Telegram chat (adds or updates as primary)."""
+    await add_passenger_profile(telegram_id, name, age, gender, berth, set_as_primary=True)
 
-async def reset_passenger_profile(telegram_id: int) -> bool:
-    """Delete saved passenger profile for a specific Telegram chat."""
+async def delete_passenger_profile(telegram_id: int, p_name_or_idx: Any) -> bool:
+    """Deletes a specific passenger by index (0-based) or name."""
     async with _lock:
         users = _read_json_sync(USERS_FILE)
         user_key = str(telegram_id)
-        if user_key in users and "passenger_profile" in users[user_key]:
-            del users[user_key]["passenger_profile"]
+        if user_key not in users:
+            return False
+        profiles = users[user_key].get("passenger_profiles", [])
+        if not profiles and "passenger_profile" in users[user_key]:
+            profiles = [users[user_key]["passenger_profile"]]
+
+        orig_len = len(profiles)
+        if isinstance(p_name_or_idx, int) and 0 <= p_name_or_idx < len(profiles):
+            profiles.pop(p_name_or_idx)
+        else:
+            search_str = str(p_name_or_idx).strip().lower()
+            profiles = [p for p in profiles if p.get("name", "").lower() != search_str and str(p.get("id")) != search_str]
+
+        if len(profiles) < orig_len:
+            users[user_key]["passenger_profiles"] = profiles
+            if profiles:
+                users[user_key]["passenger_profile"] = profiles[0]
+            else:
+                users[user_key].pop("passenger_profile", None)
             _write_json_sync(USERS_FILE, users)
             return True
+        return False
+
+async def get_passenger_profile(telegram_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve saved primary passenger profile for a specific Telegram chat."""
+    profiles = await get_passenger_profiles(telegram_id)
+    return profiles[0] if profiles else None
+
+async def reset_passenger_profile(telegram_id: int) -> bool:
+    """Delete all saved passenger profiles for a specific Telegram chat."""
+    async with _lock:
+        users = _read_json_sync(USERS_FILE)
+        user_key = str(telegram_id)
+        changed = False
+        if user_key in users:
+            if "passenger_profile" in users[user_key]:
+                del users[user_key]["passenger_profile"]
+                changed = True
+            if "passenger_profiles" in users[user_key]:
+                del users[user_key]["passenger_profiles"]
+                changed = True
+            if changed:
+                _write_json_sync(USERS_FILE, users)
+                return True
         return False
 
 

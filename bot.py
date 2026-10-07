@@ -309,23 +309,28 @@ async def handle_create_profile_berth(update: Update, context: ContextTypes.DEFA
     berth = text
 
     tg_id = update.effective_user.id
-    await storage.save_passenger_profile(tg_id, name, age, gender, berth)
+    updated_profiles = await storage.add_passenger_profile(tg_id, name, age, gender, berth)
 
     gender_full = "Male" if gender == "M" else ("Female" if gender == "F" else "Transgender")
+    count_text = f"You now have *{len(updated_profiles)} traveler(s)* saved in your Master Passenger List!"
     card = (
-        "✅ *PASSENGER PROFILE CREATED SUCCESSFULLY!*\n"
+        "✅ *PASSENGER ADDED TO MASTER LIST!*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"• *Full Name:* `{name}`\n"
         f"• *Age:* `{age}` years\n"
         f"• *Gender:* `{gender_full}`\n"
         f"• *Berth Preference:* `{berth}`\n\n"
+        f"👥 *Master List:* {count_text}\n"
         "✨ *1-Click Booking Advantage:*\n"
-        "Your passenger details are securely saved for this chat! When you book any train, the bot will auto-select this profile in 1 tap without asking for traveler details again.\n\n"
-        "👉 You can view anytime with `/profile` or start booking with `/book`."
+        "All your saved travelers can be selected during train bookings in 1 tap without re-entering details!\n\n"
+        "👉 View all anytime with `/profile` or tap below to add another passenger."
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚆 Start Booking Now", callback_data="info_start_booking")],
-        [InlineKeyboardButton("👤 View Full Profile", callback_data="info_view_profile")]
+        [
+            InlineKeyboardButton("➕ Add Another Passenger", callback_data="btn_create_profile"),
+            InlineKeyboardButton("👤 View Master List", callback_data="info_view_profile")
+        ]
     ])
     await update.message.reply_text(
         card,
@@ -817,18 +822,19 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(effective_msg, task_card, reply_markup=kb, parse_mode="Markdown")
 
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View saved passenger profile, IRCTC username, and linked e-Wallet status."""
+    """View saved passenger profiles, IRCTC username, and linked e-Wallet status."""
     tg_id = update.effective_user.id
-    passenger = await storage.get_passenger_profile(tg_id)
+    profiles = await storage.get_passenger_profiles(tg_id)
     irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
-    ewallet_pin = await storage.get_decrypted_ewallet(tg_id)
     cur_bal = await storage.get_user_ewallet_balance(tg_id)
 
-    p_line = (
-        f"• *Default Passenger:* {passenger['name']} ({passenger['age']} yrs, {passenger['gender']}, {passenger.get('berth', 'No Preference')})\n"
-        if passenger and passenger.get("name")
-        else "• *Default Passenger:* Not saved yet (Use `/create_profile` to set)\n"
-    )
+    if profiles:
+        p_lines = [f"👥 *Master Passenger List ({len(profiles)} Saved):*"]
+        for idx, p in enumerate(profiles, start=1):
+            p_lines.append(f"  {idx}️⃣ *{p['name']}* ({p['age']} yrs, {p['gender']}, {p.get('berth', 'No Preference')})")
+        p_block = "\n".join(p_lines) + "\n"
+    else:
+        p_block = "👥 *Master Passenger List:* No passengers saved yet (Use `/add_passenger`)\n"
 
     acc_line = (
         f"• *IRCTC Account:* `{irctc_user}` (Encrypted & linked)\n"
@@ -846,15 +852,15 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "👤 *YOUR SAVED BOOKING PROFILE*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{p_line}"
+        f"{p_block}\n"
         f"{acc_line}"
         f"{wallet_line}\n"
         "✨ *1-Click Booking Advantage:*\n"
-        "When your passenger and IRCTC credentials are saved, the agent books tickets in 0 seconds with zero manual intervention!\n\n"
-        "👉 Need to update or reset any details? Use the buttons below:"
+        "All your saved travelers can be selected in 1 click during train bookings with 0 manual intervention!\n\n"
+        "👉 Manage travelers or account details below:"
     )
 
-    has_passenger = bool(passenger and passenger.get("name"))
+    has_passengers = bool(profiles)
     has_irctc = bool(irctc_user)
     has_wallet_bal = bool(cur_bal > 0)
 
@@ -863,10 +869,13 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     # 1. Passenger Profile Row
-    if has_passenger:
+    if has_passengers:
         kb_buttons.append([
-            InlineKeyboardButton("👤 ✏️ Update Passenger", callback_data="btn_create_profile"),
-            InlineKeyboardButton("🗑️ Remove", callback_data="reset_profile_passenger")
+            InlineKeyboardButton("➕ Add Another Passenger", callback_data="btn_create_profile"),
+            InlineKeyboardButton("👤 ✏️ Update Passenger", callback_data="btn_create_profile")
+        ])
+        kb_buttons.append([
+            InlineKeyboardButton("🗑️ Remove / Clear Passengers", callback_data="reset_profile_passenger")
         ])
     else:
         kb_buttons.append([
@@ -896,7 +905,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
     # 4. Global Reset All (only shown if at least one item is saved)
-    if has_passenger or has_irctc or has_wallet_bal:
+    if has_passengers or has_irctc or has_wallet_bal:
         kb_buttons.append([
             InlineKeyboardButton("⚠️ Reset All Profile Data", callback_data="reset_profile_all")
         ])
@@ -1085,9 +1094,23 @@ def get_date_keyboard():
 
 
 async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip().upper()
+    raw_text = update.message.text.strip()
+    text = raw_text.upper()
     if is_cancel_command(text):
         return await cancel_booking(update, context)
+
+    # Intent routing for plain commands sent without slash (e.g. 'profile', 'help', 'wallet', 'tasks')
+    intent = raw_text.lower()
+    if intent in ["profile", "/profile", "passengers", "passenger", "my profile", "profiles"]:
+        return await cmd_profile(update, context)
+    if intent in ["help", "/help", "commands", "menu"]:
+        return await cmd_help(update, context)
+    if intent in ["wallet", "/wallet", "balance", "/balance", "ewallet", "my wallet"]:
+        return await cmd_wallet(update, context)
+    if intent in ["tasks", "/tasks", "task", "/task", "status", "active tasks", "my bookings"]:
+        return await cmd_tasks(update, context)
+    if intent in ["add passenger", "create profile", "new profile"]:
+        return await start_create_profile(update, context)
 
     # Clean separators: support ' - ', '-', ' TO ', '->', '➔', '/', or spaces
     cleaned = re.sub(r"\s*(->|➔|TO|-|–|/)\s*", "-", text, flags=re.IGNORECASE).strip()
@@ -1493,7 +1516,7 @@ async def handle_class_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["payment_method"] = "IRCTC eWallet"
 
     tg_id = update.effective_user.id
-    saved = await storage.get_passenger_profile(tg_id)
+    saved_profiles = await storage.get_passenger_profiles(tg_id)
     cur_bal = await storage.get_user_ewallet_balance(tg_id)
     bal_check = irctc_svc.verify_ewallet_balance(cur_bal, matching["fare"])
 
@@ -1504,21 +1527,25 @@ async def handle_class_select(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Required Amount:* `₹{bal_check['total_required']:.2f}` (Base fare + ₹11.80 IRCTC fee)\n"
     )
 
-    if saved and saved.get("name"):
-        context.user_data["saved_profile"] = saved
-        choice_kb = [
-            [f"✅ Use Saved: {saved['name']} ({saved['age']}, {saved['gender']})"],
-            ["➕ Enter New Passenger Details"],
-            ["⬅️ Back", "❌ Cancel"]
-        ]
+    if saved_profiles:
+        context.user_data["saved_profiles"] = saved_profiles
+        context.user_data["saved_profile"] = saved_profiles[0]
+        choice_kb = []
+        for p in saved_profiles:
+            choice_kb.append([f"✅ Use: {p['name']} ({p['age']}, {p['gender']})"])
+        choice_kb.append(["➕ Enter New Passenger Details"])
+        choice_kb.append(["⬅️ Back", "❌ Cancel"])
+
+        p_list_desc = "\n".join([
+            f"• *{p['name']}* ({p['age']} yrs, {p['gender']}, {p.get('berth', 'No Preference')})"
+            for p in saved_profiles
+        ])
         await update.message.reply_text(
             f"{wallet_summary}\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "👤 *Saved Passenger Profile Found:*\n\n"
-            f"• *Name:* {saved['name']}\n"
-            f"• *Age:* {saved['age']} yrs | *Gender:* {saved['gender']}\n"
-            f"• *Berth Preference:* {saved.get('berth', 'No Preference')}\n\n"
-            "👉 Tap below to use this saved passenger in 1-click or enter new details:",
+            f"👥 *Saved Passenger(s) Available ({len(saved_profiles)}):*\n\n"
+            f"{p_list_desc}\n\n"
+            "👉 Tap below to select any traveler in 1-click or enter new details:",
             reply_markup=ReplyKeyboardMarkup(choice_kb, resize_keyboard=True),
             parse_mode="Markdown"
         )
@@ -1630,15 +1657,23 @@ async def handle_passenger_choice(update: Update, context: ContextTypes.DEFAULT_
         )
         return STATE_CLASS_SELECT
 
-    saved = context.user_data.get("saved_profile") or await storage.get_passenger_profile(update.effective_user.id)
-    if saved and ("use saved" in text.lower() or "✅" in text or "⚡" in text or saved.get("name", "").lower() in text.lower()):
-        context.user_data["p_name"] = saved["name"]
-        context.user_data["p_age"] = saved["age"]
-        context.user_data["p_gender"] = saved["gender"]
-        context.user_data["p_berth"] = saved.get("berth", "No Preference")
+    saved_profiles = context.user_data.get("saved_profiles") or await storage.get_passenger_profiles(update.effective_user.id)
+    selected_passenger = None
+    for p in saved_profiles:
+        if p.get("name", "").lower() in text.lower():
+            selected_passenger = p
+            break
+    if not selected_passenger and saved_profiles and ("use" in text.lower() or "✅" in text or "⚡" in text):
+        selected_passenger = saved_profiles[0]
+
+    if selected_passenger:
+        context.user_data["p_name"] = selected_passenger["name"]
+        context.user_data["p_age"] = selected_passenger["age"]
+        context.user_data["p_gender"] = selected_passenger["gender"]
+        context.user_data["p_berth"] = selected_passenger.get("berth", "No Preference")
         await safe_reply(
             update.message,
-            f"✅ Using Saved Passenger: *{saved['name']}* ({saved['age']} yrs, {saved['gender']}, {saved.get('berth', 'No Preference')})",
+            f"✅ Using Saved Passenger: *{selected_passenger['name']}* ({selected_passenger['age']} yrs, {selected_passenger['gender']}, {selected_passenger.get('berth', 'No Preference')})",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )

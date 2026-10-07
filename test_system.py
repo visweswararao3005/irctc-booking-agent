@@ -316,6 +316,7 @@ async def run_tests():
 
     # 10. Test Persistent Passenger Profile Management & Reuse
     print("\n[Test 10] Testing Persistent Passenger Profile Management & 1-Click Reuse...")
+    await storage.reset_passenger_profile(test_user_id)
     await storage.save_passenger_profile(test_user_id, "Vicky", 24, "Male", "Lower Berth (LB)")
     p_prof = await storage.get_passenger_profile(test_user_id)
     assert p_prof is not None, "Saved passenger profile was None"
@@ -325,9 +326,24 @@ async def run_tests():
     assert p_prof["berth"] == "Lower Berth (LB)"
     print(f"   • Saved Profile Verified: {p_prof['name']} ({p_prof['age']}, {p_prof['gender']}, {p_prof['berth']})")
 
+    # Multi-Passenger Master List addition without overwriting
+    profiles = await storage.add_passenger_profile(test_user_id, "Harish", 28, "Male", "Upper Berth (UB)")
+    assert len(profiles) == 2, f"Expected 2 profiles, got {len(profiles)}"
+    assert profiles[0]["name"] == "Vicky"
+    assert profiles[1]["name"] == "Harish"
+    all_profs = await storage.get_passenger_profiles(test_user_id)
+    assert len(all_profs) == 2
+    print("   • Multi-Passenger Master List Verified: Appends without overwriting")
+
+    # Test individual deletion
+    del_ok = await storage.delete_passenger_profile(test_user_id, "Harish")
+    assert del_ok is True
+    assert len(await storage.get_passenger_profiles(test_user_id)) == 1
+
     # Test Profile Reset
     await storage.reset_passenger_profile(test_user_id)
     assert await storage.get_passenger_profile(test_user_id) is None, "Profile was not reset"
+    assert len(await storage.get_passenger_profiles(test_user_id)) == 0, "Passenger list not cleared"
 
     # Verify Standalone /create_profile conversation handlers
     assert callable(bot.start_create_profile), "bot.start_create_profile missing"
@@ -796,6 +812,8 @@ async def run_tests():
     print("\n[Test 19] Testing Multi-Flow State Isolation & Seamless Re-entry (/create_profile flow)...")
     from telegram.ext import ConversationHandler
 
+    await storage.reset_passenger_profile(test_user_id)
+
     mock_msg_19 = MockTelegramMessage()
     mock_msg_19.text = ""
     mock_upd_19 = type("MockUpdate", (), {
@@ -842,6 +860,36 @@ async def run_tests():
     assert saved_p["age"] == 25 and saved_p["gender"] == "M" and saved_p["berth"] == "Lower Berth (LB)"
     print("   • Start Booking (STATE_ROUTE) -> Profile Create (STATE_PROF_NAME): Seamless Re-entry Verified")
     print(f"   • Passenger Profile Successfully Saved: {saved_p['name']} ({saved_p['age']}, {saved_p['gender']}, {saved_p['berth']})")
+
+    # Step 7: Add second passenger "Harish" via profile flow
+    res_prof_start2 = await bot.start_create_profile(mock_upd_19, mock_ctx_19)
+    assert res_prof_start2 == bot.STATE_PROF_NAME
+    mock_msg_19.text = "Harish"
+    await bot.handle_create_profile_name(mock_upd_19, mock_ctx_19)
+    mock_msg_19.text = "28"
+    await bot.handle_create_profile_age(mock_upd_19, mock_ctx_19)
+    mock_msg_19.text = "Male"
+    await bot.handle_create_profile_gender(mock_upd_19, mock_ctx_19)
+    mock_msg_19.text = "Upper Berth (UB)"
+    await bot.handle_create_profile_berth(mock_upd_19, mock_ctx_19)
+
+    # Verify both passengers exist and Visweswara Rao was NOT overwritten by Harish
+    all_passengers = await storage.get_passenger_profiles(test_user_id)
+    assert len(all_passengers) == 2, f"Expected 2 passengers, got {len(all_passengers)}"
+    names = [p["name"] for p in all_passengers]
+    assert "Visweswara Rao" in names and "Harish" in names, f"Names mismatch: {names}"
+    print(f"   • Multi-Passenger Master List Verified: Both '{names[0]}' and '{names[1]}' preserved")
+
+    # Step 8: Verify Plain Text Intent Routing (user types 'Profile' or 'help' without slash)
+    mock_msg_19.text = "Profile"
+    await bot.handle_route(mock_upd_19, mock_ctx_19)
+    assert any("YOUR SAVED BOOKING PROFILE" in t for t in mock_msg_19.sent_texts), "Plain 'Profile' intent not routed"
+    assert any("Harish" in t for t in mock_msg_19.sent_texts), "Profile output missing passenger Harish"
+
+    mock_msg_19.text = "help"
+    await bot.handle_route(mock_upd_19, mock_ctx_19)
+    assert any("COMMAND DIRECTORY" in t for t in mock_msg_19.sent_texts), "Plain 'help' intent not routed"
+    print("   • Plain Command Routing ('Profile', 'help'): Verified zero station code error")
     print("✅ Multi-Flow State Isolation & Seamless Re-entry: PASSED")
 
     print("\n" + "=" * 60)
