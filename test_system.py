@@ -450,12 +450,14 @@ async def run_tests():
             self.fail_markdown = fail_markdown
             self.sent_texts = []
             self.sent_modes = []
+            self.sent_markups = []
 
         async def reply_text(self, text, reply_markup=None, parse_mode=None):
             if self.fail_markdown and parse_mode == "Markdown":
                 raise Exception("telegram.error.BadRequest: Can't parse entities: Can't find end of italic entity")
             self.sent_texts.append(text)
             self.sent_modes.append(parse_mode)
+            self.sent_markups.append(reply_markup)
             return self
 
     # Case A: safe_reply fallback
@@ -492,22 +494,49 @@ async def run_tests():
     assert len(mock_update.effective_message.sent_texts) >= 1, "cmd_tasks produced no messages"
     assert any("Task ID" in t for t in mock_update.effective_message.sent_texts), "cmd_tasks did not output task card"
 
-    # Case C: cmd_profile
+    # Case C: cmd_profile (Empty state: Add / Link / Set Balance)
+    await storage.reset_passenger_profile(test_user_id)
+    await storage.reset_user_credentials(test_user_id)
+    await storage.reset_user_ewallet(test_user_id)
+
+    prof_update_empty = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": MockTelegramMessage()
+    })()
+    await cmd_profile(prof_update_empty, None)
+    assert len(prof_update_empty.effective_message.sent_texts) >= 1
+    assert "YOUR SAVED BOOKING PROFILE" in prof_update_empty.effective_message.sent_texts[0]
+    empty_kb = prof_update_empty.effective_message.sent_markups[-1]
+    button_texts_empty = [b.text for row in empty_kb.inline_keyboard for b in row]
+    assert any("Add Passenger" in b for b in button_texts_empty), "Missing 'Add Passenger' in empty profile"
+    assert any("Link IRCTC" in b for b in button_texts_empty), "Missing 'Link IRCTC' in empty profile"
+    assert any("Record / Set Balance" in b for b in button_texts_empty), "Missing 'Record / Set Balance' in empty profile"
+    assert not any("Reset Passenger" in b for b in button_texts_empty), "Found misleading 'Reset Passenger' in empty profile"
+    assert not any("Reset IRCTC" in b for b in button_texts_empty), "Found misleading 'Reset IRCTC' in empty profile"
+
+    # Case D: cmd_profile (Populated state: Update / Unlink / Update Balance)
     await storage.save_passenger_profile(test_user_id, "Balaji", 25, "Male", "Lower Berth (LB)")
     await storage.save_user_credentials(test_user_id, "balaji_irctc", "secretpass")
-    await storage.save_user_upi(test_user_id, "balaji@okaxis")
+    await storage.save_user_ewallet_balance(test_user_id, 1500.0)
 
     prof_update = type("MockUpdate", (), {
         "effective_user": type("MockUser", (), {"id": test_user_id})(),
         "effective_message": MockTelegramMessage()
     })()
     await cmd_profile(prof_update, None)
-    assert len(prof_update.effective_message.sent_texts) >= 1, "cmd_profile produced no messages"
-    assert "YOUR SAVED BOOKING PROFILE" in prof_update.effective_message.sent_texts[0], "cmd_profile header missing"
+    assert len(prof_update.effective_message.sent_texts) >= 1
     assert "balaji_irctc" in prof_update.effective_message.sent_texts[0], "IRCTC username missing in profile"
+    populated_kb = prof_update.effective_message.sent_markups[-1]
+    button_texts_pop = [b.text for row in populated_kb.inline_keyboard for b in row]
+    assert any("Update Passenger" in b for b in button_texts_pop), "Missing 'Update Passenger' in populated profile"
+    assert any("Update IRCTC Account" in b for b in button_texts_pop), "Missing 'Update IRCTC Account' in populated profile"
+    assert any("Update Balance" in b for b in button_texts_pop), "Missing 'Update Balance' in populated profile"
+    assert any("Remove" in b for b in button_texts_pop), "Missing 'Remove' in populated profile"
+    assert any("Unlink" in b for b in button_texts_pop), "Missing 'Unlink' in populated profile"
 
     print("   • safe_reply Fallback on Telegram Markdown Error: PASSED (Zero crashes)")
     print("   • cmd_tasks with Live Active Task & last_chk:    PASSED (Zero NameError)")
+    print("   • cmd_profile Dynamic State-Aware Buttons:       PASSED (Add/Update/Remove validated)")
     # 15. Test Live Payment Gateway & Dynamic UPI QR Engine
     print("\n[Test 15] Testing Live Payment Gateway, Dynamic UPI QR & UTR Validation...")
     from live_payment_service import (

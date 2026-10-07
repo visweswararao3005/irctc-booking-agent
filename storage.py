@@ -170,14 +170,21 @@ async def get_decrypted_ewallet(telegram_id: int) -> Optional[str]:
     return dec if dec else None
 
 async def reset_user_ewallet(telegram_id: int) -> bool:
-    """Delete stored IRCTC eWallet credentials for a specific Telegram chat."""
+    """Delete stored IRCTC eWallet credentials and recorded balance for a specific Telegram chat."""
     async with _lock:
         users = _read_json_sync(USERS_FILE)
         user_key = str(telegram_id)
-        if user_key in users and "ewallet_pin" in users[user_key]:
-            del users[user_key]["ewallet_pin"]
-            _write_json_sync(USERS_FILE, users)
-            return True
+        changed = False
+        if user_key in users:
+            if "ewallet_pin" in users[user_key]:
+                del users[user_key]["ewallet_pin"]
+                changed = True
+            if "ewallet_balance" in users[user_key]:
+                del users[user_key]["ewallet_balance"]
+                changed = True
+            if changed:
+                _write_json_sync(USERS_FILE, users)
+                return True
         return False
 
 async def save_user_ewallet_balance(telegram_id: int, balance: float) -> None:

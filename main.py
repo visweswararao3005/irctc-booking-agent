@@ -100,6 +100,7 @@ async def run_bot():
             # 2. Account setup entry points
             CommandHandler("change_account", bot.start_change_account),
             CommandHandler("set_account", bot.start_change_account),
+            CallbackQueryHandler(bot.start_change_account, pattern=r"^btn_link_irctc$"),
 
             # 3. Wallet setup entry points
             CommandHandler("change_wallet", bot.start_change_wallet),
@@ -173,6 +174,7 @@ async def run_bot():
             CommandHandler("tasks", bot.cmd_tasks),
             CommandHandler("verify", bot.cmd_verify_pnr),
             CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
+            CallbackQueryHandler(bot.start_change_account, pattern=r"^btn_link_irctc$"),
             CallbackQueryHandler(bot.start_booking, pattern=r"^info_start_booking$"),
             CallbackQueryHandler(bot.cmd_profile, pattern=r"^info_view_profile$"),
             CallbackQueryHandler(bot.cmd_tasks, pattern=r"^info_view_tasks$"),

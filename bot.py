@@ -115,33 +115,62 @@ async def cmd_reset_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_change_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Begins the credential update conversation."""
-    await update.message.reply_text(
-        "🔑 *IRCTC Account Setup*\n\n"
-        "Please enter your *IRCTC Username*:\n"
-        "_(This is securely encrypted at rest for this chat)_",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    context.user_data.clear()
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
+    msg = update.effective_message
+    if msg:
+        await msg.reply_text(
+            "🔑 *Link IRCTC Account*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Please enter your *IRCTC Username*:\n"
+            "• This is securely encrypted at rest with AES-256 for this chat.\n"
+            "• Used for 0s instant auto-debit and ticket booking.",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
+        )
     return STATE_SET_USER
 
 async def handle_set_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["new_irctc_user"] = update.message.text.strip()
-    await update.message.reply_text("Now enter your *IRCTC Password*:", parse_mode="Markdown")
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    context.user_data["new_irctc_user"] = text
+    await update.message.reply_text(
+        f"Username: *{text}*\n\nNow enter your *IRCTC Password*:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
+    )
     return STATE_SET_PASS
 
 async def handle_set_pass(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    irctc_pass = update.message.text.strip()
+    text = update.message.text.strip()
+    if is_cancel_command(text):
+        return await cancel_booking(update, context)
+
+    irctc_pass = text
     irctc_user = context.user_data.get("new_irctc_user", "")
     tg_id = update.effective_user.id
 
     await storage.save_user_credentials(tg_id, irctc_user, irctc_pass)
-    await update.message.reply_text(
-        f"✅ *IRCTC Account Successfully Saved!*\n\n"
-        f"• Username: `{mask_text(irctc_user, 3)}`\n"
-        f"• Password: `••••••••`\n\n"
-        "You can now book tickets anytime using `/start` or `hi`.",
-        parse_mode="Markdown"
+    card = (
+        "✅ *IRCTC ACCOUNT LINKED SUCCESSFULLY!*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"• *Username:* `{mask_text(irctc_user, 3)}`\n"
+        f"• *Password:* `••••••••`\n\n"
+        "🔒 *Security:* Encrypted with AES-256 Fernet keys.\n"
+        "✨ Ready for 0-second instant auto-booking with IRCTC e-Wallet!"
     )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚆 Start Booking Now", callback_data="info_start_booking")],
+        [InlineKeyboardButton("👤 View Full Profile", callback_data="info_view_profile")]
+    ])
+    await update.message.reply_text(card, reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+    await safe_reply(update.message, "👇 Quick Actions:", reply_markup=kb, parse_mode="Markdown")
     return ConversationHandler.END
  
 # ----------------- Passenger Profile Setup Handlers (/create_profile) -----------------
@@ -825,16 +854,53 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👉 Need to update or reset any details? Use the buttons below:"
     )
 
+    has_passenger = bool(passenger and passenger.get("name"))
+    has_irctc = bool(irctc_user)
+    has_wallet_bal = bool(cur_bal > 0)
+
     kb_buttons = [
-        [InlineKeyboardButton("🚆 Start Booking", callback_data="info_start_booking")]
+        [InlineKeyboardButton("🚆 Start Booking Now", callback_data="info_start_booking")]
     ]
-    if not (passenger and passenger.get("name")):
-        kb_buttons.append([InlineKeyboardButton("👤 Create Passenger Profile", callback_data="btn_create_profile")])
-    kb_buttons.append([
-        InlineKeyboardButton("🔄 Reset Passenger", callback_data="reset_profile_passenger"),
-        InlineKeyboardButton("🔐 Reset IRCTC", callback_data="reset_profile_irctc"),
-        InlineKeyboardButton("💼 Reset e-Wallet", callback_data="reset_profile_wallet")
-    ])
+
+    # 1. Passenger Profile Row
+    if has_passenger:
+        kb_buttons.append([
+            InlineKeyboardButton("👤 ✏️ Update Passenger", callback_data="btn_create_profile"),
+            InlineKeyboardButton("🗑️ Remove", callback_data="reset_profile_passenger")
+        ])
+    else:
+        kb_buttons.append([
+            InlineKeyboardButton("👤 ➕ Add Passenger Profile", callback_data="btn_create_profile")
+        ])
+
+    # 2. IRCTC Account Row
+    if has_irctc:
+        kb_buttons.append([
+            InlineKeyboardButton("🔐 ✏️ Update IRCTC Account", callback_data="btn_link_irctc"),
+            InlineKeyboardButton("🗑️ Unlink", callback_data="reset_profile_irctc")
+        ])
+    else:
+        kb_buttons.append([
+            InlineKeyboardButton("🔐 ➕ Link IRCTC Account", callback_data="btn_link_irctc")
+        ])
+
+    # 3. IRCTC e-Wallet Row
+    if has_wallet_bal:
+        kb_buttons.append([
+            InlineKeyboardButton("💼 ✏️ Update Balance", callback_data="btn_update_balance"),
+            InlineKeyboardButton("🗑️ Clear", callback_data="reset_profile_wallet")
+        ])
+    else:
+        kb_buttons.append([
+            InlineKeyboardButton("💼 💰 Record / Set Balance", callback_data="btn_update_balance")
+        ])
+
+    # 4. Global Reset All (only shown if at least one item is saved)
+    if has_passenger or has_irctc or has_wallet_bal:
+        kb_buttons.append([
+            InlineKeyboardButton("⚠️ Reset All Profile Data", callback_data="reset_profile_all")
+        ])
+
     kb = InlineKeyboardMarkup(kb_buttons)
     await safe_reply(update.effective_message, msg, reply_markup=kb, parse_mode="Markdown")
 
@@ -2236,31 +2302,95 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return await cmd_tasks(update, context)
 
     elif data == "reset_profile_passenger":
+        existing_p = await storage.get_passenger_profile(update.effective_user.id)
         await storage.reset_passenger_profile(update.effective_user.id)
+        alert_msg = "🗑️ Passenger profile removed!" if existing_p else "ℹ️ No passenger profile was saved."
         try:
-            await query.answer("Passenger profile reset!", show_alert=True)
+            await query.answer(alert_msg, show_alert=True)
         except Exception:
             pass
         return await cmd_profile(update, context)
 
     elif data == "reset_profile_irctc":
+        existing_u, _ = await storage.get_decrypted_credentials(update.effective_user.id)
         await storage.reset_user_credentials(update.effective_user.id)
+        alert_msg = "🗑️ IRCTC credentials unlinked!" if existing_u else "ℹ️ No IRCTC account was linked."
         try:
-            await query.answer("IRCTC credentials removed!", show_alert=True)
+            await query.answer(alert_msg, show_alert=True)
         except Exception:
             pass
         return await cmd_profile(update, context)
 
     elif data == "reset_profile_wallet":
+        cur_bal = await storage.get_user_ewallet_balance(update.effective_user.id)
+        cur_pin = await storage.get_decrypted_ewallet(update.effective_user.id)
+        await storage.reset_user_ewallet(update.effective_user.id)
+        alert_msg = "🗑️ e-Wallet balance & PIN cleared!" if (cur_bal > 0 or cur_pin) else "ℹ️ No e-Wallet details were saved."
+        try:
+            await query.answer(alert_msg, show_alert=True)
+        except Exception:
+            pass
+        return await cmd_profile(update, context)
+
+    elif data == "reset_profile_all":
+        await storage.reset_passenger_profile(update.effective_user.id)
+        await storage.reset_user_credentials(update.effective_user.id)
         await storage.reset_user_ewallet(update.effective_user.id)
         try:
-            await query.answer("IRCTC e-Wallet PIN removed!", show_alert=True)
+            await query.answer("🗑️ All profile data cleared successfully!", show_alert=True)
         except Exception:
             pass
         return await cmd_profile(update, context)
 
     elif data == "btn_create_profile":
         return await start_create_profile(update, context)
+
+    elif data == "btn_link_irctc":
+        return await start_change_account(update, context)
+
+    elif data == "btn_update_balance":
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        bal_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("➕ ₹500", callback_data="quick_bal_500"),
+                InlineKeyboardButton("➕ ₹1,000", callback_data="quick_bal_1000")
+            ],
+            [
+                InlineKeyboardButton("➕ ₹2,000", callback_data="quick_bal_2000"),
+                InlineKeyboardButton("➕ ₹5,000", callback_data="quick_bal_5000")
+            ],
+            [
+                InlineKeyboardButton("🔙 Back to Profile", callback_data="info_view_profile")
+            ]
+        ])
+        bal_prompt = (
+            "💼 *RECORD / UPDATE IRCTC e-WALLET BALANCE*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Tap a quick preset button below to record your balance in 1 tap, or enter any custom amount using:\n"
+            "👉 `/wallet balance <amount>` *(e.g. `/wallet balance 1500`)*\n\n"
+            "🔗 *Official IRCTC Deposit Portal:* [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n\n"
+            "✨ *Why this is needed:*\n"
+            "Recording your deposit lets the Seat Sniper pre-verify funds and auto-debit tickets instantly with 0.0s latency!"
+        )
+        effective_msg = update.effective_message
+        if effective_msg:
+            await safe_reply(effective_msg, bal_prompt, reply_markup=bal_kb, parse_mode="Markdown")
+
+    elif data.startswith("quick_bal_"):
+        raw_amt = data.replace("quick_bal_", "")
+        try:
+            amt = float(raw_amt)
+            await storage.save_user_ewallet_balance(update.effective_user.id, amt)
+            try:
+                await query.answer(f"✅ e-Wallet Balance set to ₹{amt:.2f}!", show_alert=True)
+            except Exception:
+                pass
+        except ValueError:
+            pass
+        return await cmd_profile(update, context)
 
     elif data == "info_view_profile":
         try:
