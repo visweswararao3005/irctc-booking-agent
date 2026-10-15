@@ -866,7 +866,35 @@ async def run_tests():
     assert res_book == bot.STATE_ROUTE
     assert any("START TRAIN BOOKING" in t for t in mock_msg_19.sent_texts), "Missing route prompt after tapping Book Ticket"
     assert any("SOURCE-DESTINATION" in t for t in mock_msg_19.sent_texts), "Missing SOURCE-DESTINATION prompt"
-    print("   • 'Book Train Ticket' Button Trigger: Prompts for route and transitions cleanly")
+
+    # Step 1c: Direct callback via start_booking handler (ensure no loop back to welcome menu)
+    mock_msg_19_direct = MockTelegramMessage()
+    mock_msg_19_direct.text = ""
+    cb_book_direct = MockCallbackQuery("info_start_booking", test_user_id, mock_msg_19_direct)
+    mock_cb_book_direct = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": mock_msg_19_direct,
+        "callback_query": cb_book_direct,
+        "message": None
+    })()
+    res_direct = await bot.start_booking(mock_cb_book_direct, mock_ctx_19)
+    assert res_direct == bot.STATE_ROUTE
+    assert any("START TRAIN BOOKING" in t for t in mock_msg_19_direct.sent_texts), "start_booking failed to redirect info_start_booking to cmd_book"
+    assert not any("WELCOME TO IRCTC AI BOOKING AGENT" in t for t in mock_msg_19_direct.sent_texts), "start_booking incorrectly looped back to welcome dashboard!"
+
+    # Step 1d: Plain text 'book' input via start_booking handler
+    mock_msg_19_txt = MockTelegramMessage()
+    mock_msg_19_txt.text = "book"
+    mock_upd_txt = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": mock_msg_19_txt,
+        "callback_query": None,
+        "message": mock_msg_19_txt
+    })()
+    res_txt = await bot.start_booking(mock_upd_txt, mock_ctx_19)
+    assert res_txt == bot.STATE_ROUTE
+    assert any("START TRAIN BOOKING" in t for t in mock_msg_19_txt.sent_texts), "start_booking failed to redirect plain 'book' text to cmd_book"
+    print("   • 'Book Train Ticket' Button & Text Triggers: Direct route prompt verified (no menu loop)")
 
     # Step 2: User triggers profile creation (taps button or /create_profile)
     res_prof_start = await bot.start_create_profile(mock_upd_19, mock_ctx_19)

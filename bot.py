@@ -1165,10 +1165,14 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     tg_id = tg_user.id if tg_user else 0
     context.user_data.clear()
 
-    # If user explicitly issued /book or /sniper, jump straight to route prompt
+    # If triggered via 'Book Train Ticket' inline button callback, route directly to cmd_book
+    if update.callback_query and update.callback_query.data == "info_start_booking":
+        return await cmd_book(update, context)
+
+    # If user explicitly issued /book, /sniper, or typed 'book', jump straight to route prompt
     if update.message and update.message.text:
         cmd_text = update.message.text.strip().lower()
-        if cmd_text.startswith("/book") or cmd_text.startswith("/sniper"):
+        if cmd_text.startswith("/book") or cmd_text.startswith("/sniper") or cmd_text in ["book", "sniper", "book ticket", "start booking"]:
             return await cmd_book(update, context)
 
     # Sanitize user name to prevent Markdown parsing crash
@@ -1255,6 +1259,11 @@ async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def cmd_book(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for direct /book or /sniper command, or when user clicks 'Book Train Ticket'."""
     context.user_data.clear()
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
     kb = ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
     msg = update.effective_message
     if msg:

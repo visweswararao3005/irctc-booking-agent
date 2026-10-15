@@ -90,12 +90,13 @@ async def run_bot():
         entry_points=[
             # 1. Booking flow entry points
             CommandHandler("start", bot.start_booking),
-            CommandHandler("book", bot.start_booking),
-            CommandHandler("sniper", bot.start_booking),
-            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
+            CommandHandler("book", bot.cmd_book),
+            CommandHandler("sniper", bot.cmd_book),
+            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start)$", re.IGNORECASE)), bot.start_booking),
+            MessageHandler(filters.Regex(re.compile(r"^(book|sniper|book ticket|start booking)$", re.IGNORECASE)), bot.cmd_book),
             MessageHandler(filters.Regex(ROUTE_PATTERN), bot.handle_route),
             MessageHandler(filters.Regex(TRAIN_PATTERN), bot.handle_out_of_state_train_selection),
-            CallbackQueryHandler(bot.start_booking, pattern=r"^info_start_booking$"),
+            CallbackQueryHandler(bot.cmd_book, pattern=r"^info_start_booking$"),
 
             # 2. Account setup entry points
             CommandHandler("change_account", bot.start_change_account),
@@ -149,8 +150,8 @@ async def run_bot():
         fallbacks=[
             CommandHandler("cancel", bot.cancel_booking),
             CommandHandler("start", bot.start_booking),
-            CommandHandler("book", bot.start_booking),
-            CommandHandler("sniper", bot.start_booking),
+            CommandHandler("book", bot.cmd_book),
+            CommandHandler("sniper", bot.cmd_book),
             CommandHandler("create_profile", bot.start_create_profile),
             CommandHandler("set_profile", bot.start_create_profile),
             CommandHandler("new_profile", bot.start_create_profile),
@@ -177,10 +178,13 @@ async def run_bot():
             CommandHandler("verify", bot.cmd_verify_pnr),
             CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
             CallbackQueryHandler(bot.start_change_account, pattern=r"^btn_link_irctc$"),
-            CallbackQueryHandler(bot.start_booking, pattern=r"^info_start_booking$"),
+            CallbackQueryHandler(bot.cmd_book, pattern=r"^info_start_booking$"),
             CallbackQueryHandler(bot.cmd_profile, pattern=r"^info_view_profile$"),
             CallbackQueryHandler(bot.cmd_tasks, pattern=r"^info_view_tasks$"),
-            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking),
+            CallbackQueryHandler(bot.cmd_wallet, pattern=r"^info_view_wallet$"),
+            CallbackQueryHandler(bot.cmd_help, pattern=r"^info_view_help$"),
+            MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start)$", re.IGNORECASE)), bot.start_booking),
+            MessageHandler(filters.Regex(re.compile(r"^(book|sniper|book ticket|start booking)$", re.IGNORECASE)), bot.cmd_book),
         ],
         allow_reentry=True
     )
@@ -188,8 +192,8 @@ async def run_bot():
     # Register handlers
     app.add_handler(main_conv)
     app.add_handler(CommandHandler("start", bot.start_booking))
-    app.add_handler(CommandHandler("book", bot.start_booking))
-    app.add_handler(CommandHandler("sniper", bot.start_booking))
+    app.add_handler(CommandHandler("book", bot.cmd_book))
+    app.add_handler(CommandHandler("sniper", bot.cmd_book))
     app.add_handler(CommandHandler("create_profile", bot.start_create_profile))
     app.add_handler(CommandHandler("set_profile", bot.start_create_profile))
     app.add_handler(CommandHandler("new_profile", bot.start_create_profile))
