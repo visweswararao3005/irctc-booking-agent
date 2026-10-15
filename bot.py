@@ -176,9 +176,153 @@ async def handle_set_pass(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
  
 # ----------------- Passenger Profile Setup Handlers (/create_profile) -----------------
 
+def parse_inline_passenger(raw_text: str) -> Optional[Dict[str, Any]]:
+    """
+    Intelligently parses a passenger specification sent as a single line, e.g.:
+    - 'visweswara rao 25,male,no preference'
+    - 'visweswara rao, 25, male, no preference'
+    - 'visweswara rao 25,male,no preference , try to save this profile'
+    - 'add passenger visweswara rao 25, male, no preference'
+    - '/add_passenger visweswara rao 25, male, no preference'
+    """
+    clean_text = re.sub(
+        r"^(?:/create_profile|/add_passenger|add\s+passenger|save\s+profile|create\s+profile|passenger)\s*",
+        "",
+        raw_text.strip(),
+        flags=re.IGNORECASE
+    ).strip()
+    clean_text = re.sub(
+        r"[,.\s]*(?:try\s+to\s+save\s+this\s+profile|save\s+this\s+profile|please\s+save|save\s+it|save\s+profile|add\s+it).*$",
+        "",
+        clean_text,
+        flags=re.IGNORECASE
+    ).strip()
+
+    name = None
+    age = None
+    gender_raw = "Male"
+    berth_raw = "No Preference (NP)"
+
+    if "," in clean_text:
+        parts = [p.strip() for p in clean_text.split(",") if p.strip()]
+        if len(parts) >= 2:
+            m = re.match(r"^(.*?)\s+(\d{1,3})$", parts[0])
+            if m:
+                name = m.group(1).strip()
+                age = int(m.group(2))
+                gender_raw = parts[1] if len(parts) > 1 else "Male"
+                berth_raw = parts[2] if len(parts) > 2 else "No Preference (NP)"
+            elif len(parts) >= 3 and parts[1].isdigit():
+                name = parts[0]
+                age = int(parts[1])
+                gender_raw = parts[2]
+                berth_raw = parts[3] if len(parts) > 3 else "No Preference (NP)"
+    else:
+        m = re.search(r"\b(\d{1,3})\b", clean_text)
+        if m:
+            age_candidate = int(m.group(1))
+            if 1 <= age_candidate <= 120:
+                age = age_candidate
+                idx = m.start(1)
+                end_idx = m.end(1)
+                name = clean_text[:idx].strip()
+                remainder = clean_text[end_idx:].strip()
+                rem_parts = remainder.split(maxsplit=1)
+                if rem_parts:
+                    gender_raw = rem_parts[0]
+                    if len(rem_parts) > 1:
+                        berth_raw = rem_parts[1]
+
+    if not name or age is None:
+        return None
+
+    clean_name = re.sub(r"[^A-Za-z\s.]", "", name).strip().title()
+    if not (2 <= len(clean_name) <= 16):
+        return None
+
+    if not (1 <= age <= 120):
+        return None
+
+    g_low = gender_raw.strip().lower()
+    if g_low.startswith("f"):
+        gender = "Female"
+    elif g_low.startswith("t"):
+        gender = "Transgender"
+    else:
+        gender = "Male"
+
+    b_low = berth_raw.strip().lower()
+    if "low" in b_low or b_low == "lb":
+        berth = "Lower Berth (LB)"
+    elif "mid" in b_low or b_low == "mb":
+        berth = "Middle Berth (MB)"
+    elif "upp" in b_low or b_low == "ub":
+        berth = "Upper Berth (UB)"
+    elif "side l" in b_low or b_low == "sl":
+        berth = "Side Lower (SL)"
+    elif "side u" in b_low or b_low == "su":
+        berth = "Side Upper (SU)"
+    elif "win" in b_low or b_low == "ws":
+        berth = "Window Seat (WS)"
+    else:
+        berth = "No Preference (NP)"
+
+    return {
+        "name": clean_name,
+        "age": age,
+        "gender": gender,
+        "berth": berth
+    }
+
+async def _save_and_reply_inline_passenger(update: Update, context: ContextTypes.DEFAULT_TYPE, p_data: Dict[str, Any]) -> int:
+    tg_id = update.effective_user.id
+    name = p_data["name"]
+    age = p_data["age"]
+    gender = p_data["gender"]
+    berth = p_data["berth"]
+    updated_profiles = await storage.add_passenger_profile(tg_id, name, age, gender, berth, set_as_primary=True)
+
+    count_text = f"You now have *{len(updated_profiles)} traveler(s)* saved in your Master Passenger List!"
+    card = (
+        "✅ *PASSENGER ADDED TO MASTER LIST!*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"• *Full Name:* `{name}`\n"
+        f"• *Age:* `{age}` years\n"
+        f"• *Gender:* `{gender}`\n"
+        f"• *Berth Preference:* `{berth}`\n\n"
+        f"👥 *Master List:* {count_text}\n"
+        f"💾 *Cloud Persistence:* Saved & synced to Upstash Redis! Survives container restarts.\n\n"
+        "👉 View all anytime with `/profile` or tap below to start booking."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚆 Start Booking Now", callback_data="info_start_booking")],
+        [
+            InlineKeyboardButton("➕ Add Another Passenger", callback_data="btn_create_profile"),
+            InlineKeyboardButton("👤 View Master List", callback_data="info_view_profile")
+        ]
+    ])
+    effective_msg = update.effective_message or update.message
+    await effective_msg.reply_text(card, reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+    await safe_reply(effective_msg, "👇 Quick Actions:", reply_markup=kb, parse_mode="Markdown")
+    return ConversationHandler.END
+
 async def start_create_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Begins the standalone passenger profile creation conversation."""
     context.user_data.clear()
+
+    # Check if user passed arguments with command, e.g. /create_profile visweswara rao 25,male,no preference
+    raw_text = update.message.text.strip() if (update.message and getattr(update.message, "text", None)) else ""
+    args = getattr(context, "args", None)
+    if args:
+        arg_text = " ".join(args)
+        inline_p = parse_inline_passenger(arg_text)
+        if inline_p:
+            return await _save_and_reply_inline_passenger(update, context, inline_p)
+    elif raw_text:
+        inline_p = parse_inline_passenger(raw_text)
+        if inline_p:
+            return await _save_and_reply_inline_passenger(update, context, inline_p)
+
     if update.callback_query:
         try:
             await update.callback_query.answer()
@@ -202,6 +346,11 @@ async def handle_create_profile_name(update: Update, context: ContextTypes.DEFAU
     text = update.message.text.strip()
     if is_cancel_command(text):
         return await cancel_booking(update, context)
+
+    # If user entered the full profile details in one line:
+    inline_p = parse_inline_passenger(text)
+    if inline_p:
+        return await _save_and_reply_inline_passenger(update, context, inline_p)
 
     clean_name = re.sub(r"[^A-Za-z\s.]", "", text).strip()
     if len(clean_name) < 2 or len(clean_name) > 16 or not re.match(r"^[A-Za-z\s.]+$", text):
@@ -1279,6 +1428,13 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return await start_create_profile(update, context)
     if intent in ["remove passenger", "/remove_passenger", "delete passenger", "/delete_passenger", "clear passenger", "delete traveler", "remove traveler"]:
         await start_remove_passenger(update, context)
+        return STATE_ROUTE
+
+    # 0b. Intelligent Inline Passenger Profile Auto-Detection:
+    # (Matches "visweswara rao 25,male,no preference", "add passenger Vicky, 24, M, LB", etc.)
+    inline_p = parse_inline_passenger(raw_text)
+    if inline_p:
+        await _save_and_reply_inline_passenger(update, context, inline_p)
         return STATE_ROUTE
 
     # Clean separators: support ' - ', '-', ' TO ', '->', '➔', '/', or spaces

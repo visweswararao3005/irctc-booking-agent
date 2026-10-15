@@ -1058,6 +1058,53 @@ async def run_tests():
     await storage.delete_task(sample_task_id)
     print("✅ IST Timezone Consistency & Cloud Storage Adapter: PASSED")
 
+    # -------------------------------------------------------------
+    # Test 21: 1-Line Intelligent Passenger Auto-Parsing & Direct Saving
+    # -------------------------------------------------------------
+    print("\n[Test 21] Testing 1-Line Intelligent Passenger Auto-Parsing & Direct Saving...")
+    inline_input_1 = "visweswara rao 25,male,no preference , try to save this profile"
+    parsed_1 = bot.parse_inline_passenger(inline_input_1)
+    assert parsed_1 is not None, "Failed to parse inline_input_1"
+    assert parsed_1["name"] == "Visweswara Rao", f"Expected 'Visweswara Rao', got {parsed_1['name']}"
+    assert parsed_1["age"] == 25, f"Expected 25, got {parsed_1['age']}"
+    assert parsed_1["gender"] == "Male", f"Expected 'Male', got {parsed_1['gender']}"
+    assert parsed_1["berth"] == "No Preference (NP)", f"Expected 'No Preference (NP)', got {parsed_1['berth']}"
+    print(f"   • Parsed Raw User Prompt:  {parsed_1['name']}, {parsed_1['age']} yrs, {parsed_1['gender']}, {parsed_1['berth']}")
+
+    # Test via handle_route (user sends directly in bot chat)
+    mock_msg_21 = type("MockMsg", (), {
+        "text": inline_input_1,
+        "sent_texts": []
+    })()
+    async def mock_reply_fn(text, reply_markup=None, parse_mode=None):
+        mock_msg_21.sent_texts.append(text)
+    mock_msg_21.reply_text = mock_reply_fn
+
+    mock_upd_21 = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": 88223344})(),
+        "effective_message": mock_msg_21,
+        "message": mock_msg_21
+    })()
+    mock_ctx_21 = type("MockContext", (), {"user_data": {}, "args": []})()
+
+    ret_state = await bot.handle_route(mock_upd_21, mock_ctx_21)
+    assert any("PASSENGER ADDED TO MASTER LIST" in t for t in mock_msg_21.sent_texts), "Inline passenger not saved via handle_route"
+    saved_profs = await storage.get_passenger_profiles(88223344)
+    assert len(saved_profs) >= 1
+    assert saved_profs[0]["name"] == "Visweswara Rao"
+    assert saved_profs[0]["age"] == 25
+    assert saved_profs[0]["gender"] == "Male"
+    assert saved_profs[0]["berth"] == "No Preference (NP)"
+    print("   • Direct Chat Input Auto-Interception: Saved successfully to Master List & Storage")
+
+    # Test via handle_create_profile_name
+    mock_msg_21.sent_texts.clear()
+    mock_msg_21.text = "visweswara rao 25,male,no preference"
+    await bot.handle_create_profile_name(mock_upd_21, mock_ctx_21)
+    assert any("PASSENGER ADDED TO MASTER LIST" in t for t in mock_msg_21.sent_texts), "Inline passenger not saved via handle_create_profile_name"
+    print("   • Profile Name Prompt Inline Fallback: Saved successfully without 4 separate steps")
+    print("✅ 1-Line Intelligent Passenger Auto-Parsing: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)
