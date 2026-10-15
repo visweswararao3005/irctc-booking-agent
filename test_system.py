@@ -829,9 +829,44 @@ async def run_tests():
     })()
     mock_ctx_19 = type("MockContext", (), {"user_data": {}})()
 
-    # Step 1: User sends /start
+    class MockCallbackQuery:
+        def __init__(self, data, user_id, message):
+            self.data = data
+            self.from_user = type("MockUser", (), {"id": user_id})()
+            self.message = message
+            self.answered_alerts = []
+
+        async def answer(self, text=None, show_alert=False):
+            if text:
+                self.answered_alerts.append(text)
+
+    # Step 1: User sends /start -> Returns Welcome Dashboard with bot info, help info, profile status, and Book Ticket button
     res_start = await bot.start_booking(mock_upd_19, mock_ctx_19)
     assert res_start == bot.STATE_ROUTE, f"Expected STATE_ROUTE, got {res_start}"
+    start_text = mock_msg_19.sent_texts[-1]
+    assert "ABOUT YOUR AUTONOMOUS RAILWAY AGENT" in start_text, "Missing bot info in /start"
+    assert "HOW TO ACCESS COMMANDS & GUIDES" in start_text, "Missing command directory guide in /start"
+    assert "YOUR SETUP & PROFILE STATUS" in start_text, "Missing profile status overview in /start"
+    start_kb = mock_msg_19.sent_markups[-1]
+    start_btns = [b.callback_data for row in start_kb.inline_keyboard for b in row]
+    assert "info_start_booking" in start_btns, "Missing 'Book Train Ticket' button"
+    assert "info_view_profile" in start_btns, "Missing 'Master Passenger List' button"
+    assert "info_view_wallet" in start_btns, "Missing 'IRCTC e-Wallet' button"
+    assert "info_view_help" in start_btns, "Missing 'All Commands' button"
+    print("   • Welcome Dashboard (/start): Bot info, help directory, profile status & action buttons verified")
+
+    # Step 1b: User taps 'Book Train Ticket' -> Prompts for SOURCE-DESTINATION route
+    cb_book = MockCallbackQuery("info_start_booking", test_user_id, mock_msg_19)
+    mock_cb_book = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": mock_msg_19,
+        "callback_query": cb_book
+    })()
+    res_book = await bot.handle_callback_query(mock_cb_book, mock_ctx_19)
+    assert res_book == bot.STATE_ROUTE
+    assert any("START TRAIN BOOKING" in t for t in mock_msg_19.sent_texts), "Missing route prompt after tapping Book Ticket"
+    assert any("SOURCE-DESTINATION" in t for t in mock_msg_19.sent_texts), "Missing SOURCE-DESTINATION prompt"
+    print("   • 'Book Train Ticket' Button Trigger: Prompts for route and transitions cleanly")
 
     # Step 2: User triggers profile creation (taps button or /create_profile)
     res_prof_start = await bot.start_create_profile(mock_upd_19, mock_ctx_19)
@@ -907,17 +942,6 @@ async def run_tests():
     assert "del_p_ask_all" in cb_datas, "Missing button for removing all passengers"
 
     # Step 10: User selects passenger 0 (Visweswara Rao) -> Bot asks for confirmation
-    class MockCallbackQuery:
-        def __init__(self, data, user_id, message):
-            self.data = data
-            self.from_user = type("MockUser", (), {"id": user_id})()
-            self.message = message
-            self.answered_alerts = []
-
-        async def answer(self, text=None, show_alert=False):
-            if text:
-                self.answered_alerts.append(text)
-
     cb_query_ask = MockCallbackQuery("del_p_ask_0", test_user_id, mock_msg_19)
     mock_cb_upd_ask = type("MockUpdate", (), {
         "effective_user": type("MockUser", (), {"id": test_user_id})(),

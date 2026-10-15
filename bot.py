@@ -1010,43 +1010,114 @@ def is_cancel_command(text: str) -> bool:
 # ----------------- Booking Conversation Handlers -----------------
 
 async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for /start, /book, or greetings."""
+    """Entry point for /start, greetings, or welcome dashboard."""
     tg_user = update.effective_user
+    tg_id = tg_user.id if tg_user else 0
     context.user_data.clear()
+
+    # If user explicitly issued /book or /sniper, jump straight to route prompt
+    if update.message and update.message.text:
+        cmd_text = update.message.text.strip().lower()
+        if cmd_text.startswith("/book") or cmd_text.startswith("/sniper"):
+            return await cmd_book(update, context)
 
     # Sanitize user name to prevent Markdown parsing crash
     raw_name = tg_user.first_name if (tg_user and tg_user.first_name) else "Traveler"
     safe_name = re.sub(r"[*_`\[\]]", "", raw_name).strip() or "Traveler"
 
+    # Fetch live setup status for glanceable onboarding
+    profiles = await storage.get_passenger_profiles(tg_id)
+    irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
+    cur_bal = await storage.get_user_ewallet_balance(tg_id)
+
+    if profiles:
+        p_desc = f"✅ *{len(profiles)} Saved* ({profiles[0]['name']}{' +' + str(len(profiles)-1) if len(profiles) > 1 else ''})"
+    else:
+        p_desc = "⚠️ *None Saved* _(Add via '👤 Master Passenger List')_"
+
+    if irctc_user:
+        acc_desc = f"✅ *Linked* (`{irctc_user}`)"
+    else:
+        acc_desc = "⚠️ *Not Linked* _(Link via '👤 Master Passenger List')_"
+
+    if cur_bal > 0:
+        wallet_desc = f"✅ *₹{cur_bal:.2f}* _(Ready for 0s Auto-Debit)_"
+    else:
+        wallet_desc = "⚠️ *₹0.00* _(Top-up via '💼 IRCTC e-Wallet')_"
+
     welcome_msg = (
-        f"🚆 *Welcome to the IRCTC AI Booking Agent, {safe_name}!*\n\n"
-        "I will help you search real live trains, check coach availability with fares, "
-        "and continuously monitor Waiting List tickets with auto-booking.\n\n"
-        "💡 *Quick Commands:*\n"
-        "• `/info` — Detailed guide on how this agent & sniper works\n"
-        "• `/tasks` — View and manage open seat sniper tasks in progress\n\n"
-        "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n"
-        "*(Example: `KJM-MAS` or `MAS-NLR`)*"
+        f"🚆 *WELCOME TO IRCTC AI BOOKING AGENT, {safe_name}!* 🚆\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 *ABOUT YOUR AUTONOMOUS RAILWAY AGENT:*\n"
+        "I am your 24/7 intelligent companion for Indian Railways (CRIS / PRS).\n"
+        "I search live trains, track real-time seat availability, and autonomously "
+        "*snipe Waiting List tickets* at chart preparation—booking confirmed berths "
+        "in 0.0 seconds with zero manual intervention!\n\n"
+        "⚙️ *YOUR SETUP & PROFILE STATUS:*\n"
+        f"• 👥 *Passengers:* {p_desc}\n"
+        f"• 🔐 *IRCTC Account:* {acc_desc}\n"
+        f"• 💼 *e-Wallet Balance:* {wallet_desc}\n\n"
+        "📖 *HOW TO ACCESS COMMANDS & GUIDES:*\n"
+        "• Tap *📖 All Commands* below or send `/help` for the full command directory.\n"
+        "• Send `/info` for architectural deep-dives & charting rules.\n"
+        "• Send `/tasks` to monitor active seat snipers.\n\n"
+        "👉 *Ready to travel?* Tap *🚆 🎫 Book Train Ticket* below to start booking, or manage your profile:"
     )
-    kb = ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
+
+    dashboard_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🚆 🎫 Book Train Ticket", callback_data="info_start_booking")
+        ],
+        [
+            InlineKeyboardButton("👤 Master Passenger List", callback_data="info_view_profile"),
+            InlineKeyboardButton("💼 IRCTC e-Wallet", callback_data="info_view_wallet")
+        ],
+        [
+            InlineKeyboardButton("📖 All Commands (/help)", callback_data="info_view_help"),
+            InlineKeyboardButton("📋 Active Tasks (/tasks)", callback_data="info_view_tasks")
+        ]
+    ])
+
     if update.callback_query:
         try:
             await update.callback_query.answer()
         except Exception:
             pass
+
     msg = update.effective_message
     if msg:
         try:
-            await msg.reply_text(
+            await safe_reply(
+                msg,
                 welcome_msg,
                 parse_mode="Markdown",
-                reply_markup=kb
+                reply_markup=dashboard_kb
             )
         except Exception:
-            await msg.reply_text(
+            await safe_reply(
+                msg,
                 welcome_msg.replace("*", "").replace("`", ""),
-                reply_markup=kb
+                reply_markup=dashboard_kb
             )
+
+    return STATE_ROUTE
+
+async def cmd_book(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point for direct /book or /sniper command, or when user clicks 'Book Train Ticket'."""
+    context.user_data.clear()
+    kb = ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True)
+    msg = update.effective_message
+    if msg:
+        await safe_reply(
+            msg,
+            "🚆 *START TRAIN BOOKING*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n"
+            "*(Example: `KJM-MAS`, `MAS-NLR`, or `NDLS-MMCT`)*\n\n"
+            "💡 _Tip: You can also enter city names like `Bangalore to Chennai`._",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
     return STATE_ROUTE
 
 def adjust_date(curr: datetime.date, delta_y: int = 0, delta_m: int = 0, delta_d: int = 0) -> datetime.date:
@@ -1193,6 +1264,8 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     # Intent routing for plain commands sent without slash (e.g. 'profile', 'help', 'wallet', 'tasks')
     intent = raw_text.lower()
+    if intent in ["book", "book ticket", "book train ticket", "book tickets", "start booking", "/book"]:
+        return await cmd_book(update, context)
     if intent in ["profile", "/profile", "passengers", "passenger", "my profile", "profiles"]:
         return await cmd_profile(update, context)
     if intent in ["help", "/help", "commands", "menu"]:
@@ -2419,10 +2492,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer()
         except Exception:
             pass
-        await query.message.reply_text(
-            "📍 Please enter your journey route in format: `SOURCE-DESTINATION`\n*(Example: `KJM-MAS` or `MAS-NLR`)*",
-            parse_mode="Markdown"
-        )
+        return await cmd_book(update, context)
 
     elif data == "info_view_tasks":
         try:
@@ -2596,6 +2666,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
         return await cmd_profile(update, context)
+
+    elif data in ["info_view_help", "btn_view_help"]:
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        return await cmd_help(update, context)
+
+    elif data in ["info_view_wallet", "btn_view_wallet"]:
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        return await cmd_wallet(update, context)
 
     else:
         try:
