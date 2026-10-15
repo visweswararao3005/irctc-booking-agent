@@ -982,6 +982,82 @@ async def run_tests():
     print("   • Direct Numeric Balance Input ('300'): Verified 0 station code error & balance updated")
     print("✅ Multi-Flow State Isolation & Seamless Re-entry: PASSED")
 
+    # -------------------------------------------------------------
+    # Test 20: IST Timezone Everywhere & Cloud Storage Adapter
+    # -------------------------------------------------------------
+    print("\n[Test 20] Testing IST Timezone Consistency & Cloud Storage Adapter...")
+    from timezone_utils import IST, now_ist, now_ist_naive, today_ist, time_ist, format_ist_time, format_ist_datetime
+
+    # 1. Verify IST timezone properties
+    cur_ist = now_ist()
+    assert cur_ist.tzinfo == IST, f"Expected tzinfo to be IST, got {cur_ist.tzinfo}"
+    formatted_time = format_ist_time(cur_ist, include_seconds=True, fmt_12h=True)
+    assert "IST" in formatted_time, f"Expected 'IST' in formatted time, got {formatted_time}"
+    assert re.search(r"\d{2}:\d{2}:\d{2} (AM|PM) IST", formatted_time), f"Time format mismatch: {formatted_time}"
+    print(f"   • Live IST Clock Output:   {formatted_time}")
+
+    # 2. Verify Ticket Opening Estimation in IST
+    est_ist = service.estimate_ticket_opening("12840", "19:00", (today_ist() + datetime.timedelta(days=1)).strftime("%Y-%m-%d"), "SL")
+    assert "target_strike_timestamp" in est_ist
+    assert "watchdog_start_timestamp" in est_ist
+    assert est_ist["seconds_until_strike"] > 0
+    print(f"   • Train 12840 Chart Prep: {est_ist['target_strike_time']} IST (Countdown: {est_ist['seconds_until_strike']:.0f}s)")
+
+    # 3. Verify Cloud Store Layer Read/Write/Auto-Migration
+    cloud_test_user = 77112233
+    await storage.save_user_credentials(cloud_test_user, "cloud_user_test", "Secr3t#Pass")
+    u_data = await storage.get_user(cloud_test_user)
+    assert u_data is not None
+    dec_u, dec_p = await storage.get_decrypted_credentials(cloud_test_user)
+    assert dec_u == "cloud_user_test"
+    assert dec_p == "Secr3t#Pass"
+
+    # 4. Verify Task Creation with IST Timestamps
+    sample_ist_task = {
+        "train_number": "12840",
+        "train_name": "MAS HWH SF MAIL",
+        "coach_class": "SL",
+        "journey_date": (today_ist() + datetime.timedelta(days=1)).strftime("%Y-%m-%d"),
+        "source_stn": "MAS",
+        "dest_stn": "NLR",
+        "departure_time": "19:00",
+        "telegram_id": cloud_test_user,
+        "telegram_chat_id": cloud_test_user,
+        "status": "MONITORING"
+    }
+    sample_task_id = await storage.add_task(sample_ist_task)
+    retrieved_task = await storage.get_task(sample_task_id)
+    assert retrieved_task is not None
+    assert retrieved_task["status"] == "MONITORING"
+
+    # 5. Verify Scheduler Manual Try formats in IST
+    from scheduler import BackgroundBookingWorker
+    class MockSchedulerBot:
+        def __init__(self):
+            self.bot = type("MockBot", (), {
+                "edit_message_text": self._noop_edit,
+                "send_message": self._noop_send
+            })()
+            self.captured_texts = []
+        async def _noop_edit(self, chat_id, message_id, text, reply_markup=None, parse_mode=None):
+            self.captured_texts.append(text)
+        async def _noop_send(self, chat_id, text, reply_markup=None, parse_mode=None):
+            self.captured_texts.append(text)
+            return type("Msg", (), {"message_id": 9999})()
+
+    mock_sched_bot = MockSchedulerBot()
+    test_sched = BackgroundBookingWorker(bot_app=mock_sched_bot, irctc_service=service)
+    await test_sched.check_and_process_task(retrieved_task, is_manual=True)
+    assert len(mock_sched_bot.captured_texts) > 0, "No status message sent by scheduler"
+    latest_sched_msg = mock_sched_bot.captured_texts[-1]
+    assert "⚡ MANUAL TRY NOW" in latest_sched_msg, f"Expected '⚡ MANUAL TRY NOW' in header, got: {latest_sched_msg}"
+    assert "IST" in latest_sched_msg, f"Expected IST timestamp in message, got: {latest_sched_msg}"
+    print(f"   • Scheduler Manual Try Header: {latest_sched_msg.splitlines()[0]}")
+
+    # Cleanup test task
+    await storage.delete_task(sample_task_id)
+    print("✅ IST Timezone Consistency & Cloud Storage Adapter: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

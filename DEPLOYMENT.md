@@ -23,6 +23,16 @@ Double-click `push_to_git.bat` in this folder to ensure your latest commits are 
    * `CARD_CVV`: `123`
    * `CARD_HOLDER`: `BALAJI P`
    * `POLL_INTERVAL_SECONDS`: `60`
+   * `REDIS_URL`: *(Recommended for permanent data persistence)* `rediss://default:xxxx@xxxx.upstash.io:6379`
+
+### 3. Permanent Data Persistence across Redeployments (100% Free Forever)
+Because Render web service containers have ephemeral filesystems, redeployments wipe temporary disk files (`data/*.json`). To preserve your linked credentials, passenger master lists, and active tasks permanently:
+1. Go to **[Upstash.com](https://console.upstash.com)** (Sign in with Google/GitHub, no credit card required).
+2. Click **Create Database** -> Choose **Redis** -> Pick region `ap-south-1 (Mumbai)` or `ap-southeast-1 (Singapore)`.
+3. Under **Connect to your database**, copy the **`rediss://`** connection URL.
+4. In Render.com -> Go to your bot service -> **Environment Variables** -> Add `REDIS_URL` = `<your rediss:// URL>`.
+5. That's it! Every profile, password, and task is automatically encrypted with AES-256 and persisted in cloud Redis. Container restarts and git pushes will NEVER wipe your data again.
+
 6. Click **Deploy**.
 7. The cloud health probe on port 8000 will report healthy (`{"status": "healthy"}`) and keep your Telegram bot running 24/7!
 

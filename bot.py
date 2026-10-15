@@ -15,6 +15,7 @@ from telegram.ext import (
 import storage
 from security import mask_text
 from irctc_service import IRCTCService
+from timezone_utils import IST, now_ist, now_ist_naive, today_ist, time_ist, format_ist_time, format_ist_datetime
 
 # Global service instance
 irctc_svc = IRCTCService()
@@ -1138,7 +1139,7 @@ def adjust_date(curr: datetime.date, delta_y: int = 0, delta_m: int = 0, delta_d
     if delta_d != 0:
         target = target + datetime.timedelta(days=delta_d)
 
-    today = datetime.date.today()
+    today = today_ist()
     max_advance = today + datetime.timedelta(days=120)
 
     if target < today:
@@ -1155,7 +1156,7 @@ def build_date_picker_inline_keyboard(selected_date: datetime.date) -> InlineKey
     plus quick stepper buttons and a clear Confirm button.
     Only allows current date or future dates within 120 days.
     """
-    today = datetime.date.today()
+    today = today_ist()
     max_advance = today + datetime.timedelta(days=120)
 
     if selected_date < today:
@@ -1207,7 +1208,7 @@ def build_date_picker_inline_keyboard(selected_date: datetime.date) -> InlineKey
 
 def format_date_picker_text(src: str, dst: str, dt: datetime.date) -> str:
     """Generates the prompt message displaying selected date and relative offset."""
-    today = datetime.date.today()
+    today = today_ist()
     diff = (dt - today).days
     day_rel = "Today" if diff == 0 else ("Tomorrow" if diff == 1 else f"in {diff} days")
     return (
@@ -1220,7 +1221,7 @@ def format_date_picker_text(src: str, dst: str, dt: datetime.date) -> str:
 
 
 def get_date_keyboard():
-    today = datetime.date.today()
+    today = today_ist()
     tomorrow = today + datetime.timedelta(days=1)
     day_after = today + datetime.timedelta(days=2)
 
@@ -1305,7 +1306,7 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     tg_id = update.effective_user.id
     await storage.save_user_session(tg_id, context.user_data)
 
-    today = datetime.date.today()
+    today = today_ist()
     today_disp = today.strftime("%d-%b-%Y (%A)")
 
     # 1. Quick options keyboard
@@ -1329,7 +1330,7 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def proceed_to_train_search(update: Update, context: ContextTypes.DEFAULT_TYPE, date_obj: datetime.date) -> int:
     """Executes live train search and displays sorted train list for a validated date."""
-    today = datetime.date.today()
+    today = today_ist()
     max_advance = today + datetime.timedelta(days=120)
     effective_msg = update.effective_message
 
@@ -1414,9 +1415,9 @@ async def handle_date_calendar_callback(update: Update, context: ContextTypes.DE
     try:
         curr_date = datetime.datetime.strptime(curr_date_str, "%Y-%m-%d").date()
     except Exception:
-        curr_date = datetime.date.today()
+        curr_date = today_ist()
 
-    today = datetime.date.today()
+    today = today_ist()
 
     if action == "confirm":
         await query.answer("Journey date selected!")
@@ -1479,7 +1480,7 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return STATE_ROUTE
 
     if "custom date" in raw_date.lower():
-        today = datetime.date.today()
+        today = today_ist()
         src = context.user_data.get("source", "KJM")
         dst = context.user_data.get("dest", "MAS")
         await update.message.reply_text(
@@ -1494,9 +1495,9 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if m:
         clean_input = m.group(1)
     elif raw_date.lower() == "today":
-        clean_input = datetime.date.today().strftime("%Y-%m-%d")
+        clean_input = today_ist().strftime("%Y-%m-%d")
     elif raw_date.lower() == "tomorrow":
-        clean_input = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        clean_input = (today_ist() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     else:
         clean_input = raw_date
 
@@ -1564,11 +1565,11 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     if is_cancel_command(selected_text):
         return await cancel_booking(update, context)
 
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    tomorrow_str = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    today_str = today_ist().strftime("%Y-%m-%d")
+    tomorrow_str = (today_ist() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
     if is_back_command(selected_text):
-        today = datetime.date.today()
+        today = today_ist()
         src = context.user_data.get("source", "KJM")
         dst = context.user_data.get("dest", "MAS")
         await update.message.reply_text(
@@ -1596,7 +1597,7 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Fetch live trains if train_list was cleared
         src = context.user_data.get("source", "KJM")
         dst = context.user_data.get("dest", "MAS")
-        dt = context.user_data.get("date", datetime.date.today().strftime("%Y-%m-%d"))
+        dt = context.user_data.get("date", today_ist().strftime("%Y-%m-%d"))
         fresh_trains = await irctc_svc.search_trains(src, dst, dt)
         context.user_data["train_list"] = fresh_trains
         train_info = next((t for t in fresh_trains if t["number"] == train_number), {
@@ -2340,9 +2341,9 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "is_watchdog_active": open_est["is_watchdog_active"],
         "chart_rule_note": open_est["chart_rule_note"],
         "attempts_count": 1,
-        "last_checked": datetime.datetime.now().strftime("%H:%M:%S"),
-        "last_checked_timestamp": datetime.datetime.now().timestamp(),
-        "created_at": datetime.datetime.now().isoformat()
+        "last_checked": format_ist_time(now_ist(), include_seconds=True, fmt_12h=True),
+        "last_checked_timestamp": now_ist().timestamp(),
+        "created_at": format_ist_datetime(now_ist())
     }
 
     task_id = await storage.add_task(task_data)

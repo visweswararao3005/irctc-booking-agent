@@ -24,6 +24,12 @@ CARD_HOLDER = os.getenv("CARD_HOLDER", "")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 OTP_TIMEOUT_SECONDS = int(os.getenv("OTP_TIMEOUT_SECONDS", "120"))
 
+# Cloud Key-Value Storage (Upstash Redis or standard Redis)
+# If provided, bot state, profiles, and tasks survive container redeployments
+REDIS_URL = os.getenv("REDIS_URL", "")
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+
 # Live Payment Gateway Configuration (NPCI UPI Intent, Cashfree & Razorpay)
 MERCHANT_UPI_VPA = os.getenv("MERCHANT_UPI_VPA", "7981141441@ybl")
 MERCHANT_NAME = os.getenv("MERCHANT_NAME", "IRCTC AI Booking Agent")

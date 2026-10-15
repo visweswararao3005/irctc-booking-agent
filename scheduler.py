@@ -10,6 +10,7 @@ import storage
 from security import mask_text
 from ticket_generator import generate_ticket_pdf
 from irctc_service import IRCTCService
+from timezone_utils import IST, now_ist, now_ist_naive, today_ist, time_ist, format_ist_time, format_ist_datetime
 
 def compute_dynamic_polling_interval(seconds_until_strike: float, seconds_until_watchdog_start: float = 0) -> tuple[int, str]:
     """
@@ -68,7 +69,7 @@ class BackgroundBookingWorker:
     async def poll_all_active_tasks(self):
         """Checks availability for all active monitoring tasks based on dynamic intervals."""
         active_tasks = await storage.get_active_tasks()
-        now_ts = datetime.datetime.now().timestamp()
+        now_ts = now_ist().timestamp()
         for task in active_tasks:
             try:
                 # Point-of-time check: If current time is before watchdog start time, DO NOT LOOP!
@@ -115,8 +116,8 @@ class BackgroundBookingWorker:
 
         # Increment attempts count
         attempts = task.get("attempts_count", 0) + 1
-        now_dt = datetime.datetime.now()
-        now_str = now_dt.strftime("%H:%M:%S")
+        now_dt = now_ist()
+        now_str = format_ist_time(now_dt, include_seconds=True, fmt_12h=True)
 
         # Query availability
         avail = await self.service.check_availability(train_no, date, coach_class, source, dest)
@@ -136,7 +137,7 @@ class BackgroundBookingWorker:
             "chart_rule_note": open_est["chart_rule_note"]
         })
 
-        tag = "⚡ [MANUAL TRY NOW]" if is_manual else f"🔄 [AUTOMATIC TRY #{attempts}]"
+        tag = "⚡ MANUAL TRY NOW" if is_manual else f"🔄 AUTOMATIC TRY #{attempts}"
 
         # Sniper Mode Check: ONLY book if seat is Confirmed / Current Available, NEVER Waiting List
         is_sniper = task.get("booking_mode") == "SNIPER"
@@ -159,7 +160,7 @@ class BackgroundBookingWorker:
             return {"status": "BOOKED", "details": avail}
         else:
             # Still in Waiting List / Charting Pending -> Send update to user
-            mode_desc = "🎯 [SEAT SNIPER WATCHDOG ACTIVE]" if is_sniper else tag
+            mode_desc = tag if is_manual else ("🎯 [SEAT SNIPER WATCHDOG ACTIVE]" if is_sniper else tag)
             quota_line = f"• *Class Quota:* `{avail.get('quota')} Berths`\n" if avail.get("quota") else ""
             chart_line = (
                 f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"

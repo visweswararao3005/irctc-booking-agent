@@ -6,6 +6,7 @@ import httpx
 from typing import List, Dict, Any, Optional, Tuple
 from ticket_generator import generate_ticket_pdf
 from config import CARD_NUMBER, CARD_EXPIRY, CARD_CVV, CARD_HOLDER, OTP_TIMEOUT_SECONDS
+from timezone_utils import IST, now_ist, now_ist_naive, today_ist, time_ist, format_ist_time, format_ist_datetime
 
 # In-memory registry for waiting OTP events: {chat_id: {"future": asyncio.Future, "expires_at": float}}
 _PENDING_OTPS: Dict[int, Dict[str, Any]] = {}
@@ -456,20 +457,20 @@ class IRCTCService:
         try:
             j_date = datetime.datetime.strptime(journey_date_str, "%Y-%m-%d").date()
         except Exception:
-            j_date = datetime.date.today()
+            j_date = today_ist()
 
         try:
             dep_time = datetime.datetime.strptime(departure_time_str, "%H:%M").time()
         except Exception:
             dep_time = datetime.time(hour=12, minute=0)
 
-        train_dep_dt = datetime.datetime.combine(j_date, dep_time)
+        train_dep_dt = datetime.datetime.combine(j_date, dep_time, tzinfo=IST)
 
         # 1. Chart 1 Preparation Calculation
         if dep_time.hour < 14:
             # Morning train rule: prepared previous night at 20:00 IST
             prev_day = j_date - datetime.timedelta(days=1)
-            chart_1_dt = datetime.datetime.combine(prev_day, datetime.time(hour=20, minute=0))
+            chart_1_dt = datetime.datetime.combine(prev_day, datetime.time(hour=20, minute=0), tzinfo=IST)
             chart_rule_note = "Previous Evening 20:00 IST Rule (Morning Train)"
         else:
             chart_1_dt = train_dep_dt - datetime.timedelta(hours=4)
@@ -482,9 +483,9 @@ class IRCTCService:
         prev_day = j_date - datetime.timedelta(days=1)
         is_ac = coach_class.upper() in ["1A", "2A", "3A", "3E", "CC", "EC", "EA"]
         tatkal_hour = 10 if is_ac else 11
-        tatkal_dt = datetime.datetime.combine(prev_day, datetime.time(hour=tatkal_hour, minute=0))
+        tatkal_dt = datetime.datetime.combine(prev_day, datetime.time(hour=tatkal_hour, minute=0), tzinfo=IST)
 
-        now = datetime.datetime.now()
+        now = now_ist()
 
         # Determine target strike window (the primary unutilized quota release)
         if now < chart_1_dt:
@@ -603,7 +604,7 @@ class IRCTCService:
         Nightly 23:45 IST to 00:30 IST.
         During this window, PRS flushes charts and resets reservation servers.
         """
-        t = check_time or datetime.datetime.now().time()
+        t = check_time or time_ist()
         if t >= datetime.time(23, 45) or t <= datetime.time(0, 30):
             return True, "IRCTC Daily PRS Maintenance Window Active (23:45 - 00:30 IST). System resets charts; reservations resume at 00:30 IST."
         return False, ""
@@ -710,7 +711,7 @@ class IRCTCService:
         otp_future = loop.create_future()
         _PENDING_OTPS[chat_id] = {
             "future": otp_future,
-            "created_at": datetime.datetime.now(),
+            "created_at": now_ist(),
             "timeout": OTP_TIMEOUT_SECONDS
         }
 
@@ -764,7 +765,7 @@ class IRCTCService:
         otp_future = loop.create_future()
         _PENDING_OTPS[chat_id] = {
             "future": otp_future,
-            "created_at": datetime.datetime.now(),
+            "created_at": now_ist(),
             "timeout": OTP_TIMEOUT_SECONDS
         }
 
