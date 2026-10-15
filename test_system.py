@@ -356,7 +356,8 @@ async def run_tests():
 
     # 11. Test Exact WL & Available Berth Calculations
     print("\n[Test 11] Testing Exact WL & Available Berth Status Breakdown...")
-    class_opts = await service.get_class_options_with_prices("16022", "KJM", "MAS", "2026-10-15")
+    test_future_dt = (datetime.date.today() + datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+    class_opts = await service.get_class_options_with_prices("16022", "KJM", "MAS", test_future_dt)
     assert len(class_opts) > 0, "No class options returned"
     sl_opt = next((c for c in class_opts if c["class_code"] == "SL"), None)
     assert sl_opt is not None, "SL class missing in options"
@@ -370,18 +371,22 @@ async def run_tests():
     from scheduler import compute_dynamic_polling_interval
 
     # Case A: Morning train (e.g. 16022 Kaveri Exp at 00:15) -> Previous day 20:00 IST rule
-    est_morning = service.estimate_ticket_opening("16022", "00:15", "2026-10-15", "SL")
-    assert "2026-10-14 20:00" in est_morning["chart_1_time"], f"Morning rule failed: {est_morning['chart_1_time']}"
-    assert "2026-10-14 19:00" in est_morning["watchdog_start_time"], f"Watchdog start time failed: {est_morning['watchdog_start_time']}"
+    future_day = datetime.date.today() + datetime.timedelta(days=7)
+    prev_day = future_day - datetime.timedelta(days=1)
+    future_date_str = future_day.strftime("%Y-%m-%d")
+
+    est_morning = service.estimate_ticket_opening("16022", "00:15", future_date_str, "SL")
+    assert prev_day.strftime("%Y-%m-%d 20:00") in est_morning["chart_1_time"], f"Morning rule failed: {est_morning['chart_1_time']}"
+    assert prev_day.strftime("%Y-%m-%d 19:00") in est_morning["watchdog_start_time"], f"Watchdog start time failed: {est_morning['watchdog_start_time']}"
     assert est_morning["is_watchdog_active"] is False, "Watchdog should be dormant for future date"
     assert est_morning["is_morning_rule"] is True
     print(f"   • Morning Train Chart 1 Time: {est_morning['chart_1_time']} ({est_morning['chart_rule_note']})")
     print(f"   • Watchdog Start Point:       {est_morning['watchdog_start_time']} IST (Dormant until 1h before chart prep)")
 
     # Case B: Afternoon train (e.g. 12603 at 16:45) -> 4 hours prior rule (12:45)
-    est_afternoon = service.estimate_ticket_opening("12603", "16:45", "2026-10-15", "SL")
-    assert "2026-10-15 12:45" in est_afternoon["chart_1_time"], f"4h rule failed: {est_afternoon['chart_1_time']}"
-    assert "2026-10-15 11:45" in est_afternoon["watchdog_start_time"]
+    est_afternoon = service.estimate_ticket_opening("12603", "16:45", future_date_str, "SL")
+    assert future_day.strftime("%Y-%m-%d 12:45") in est_afternoon["chart_1_time"], f"4h rule failed: {est_afternoon['chart_1_time']}"
+    assert future_day.strftime("%Y-%m-%d 11:45") in est_afternoon["watchdog_start_time"]
     assert est_afternoon["is_morning_rule"] is False
     print(f"   • Afternoon Train Chart 1 Time: {est_afternoon['chart_1_time']} ({est_afternoon['chart_rule_note']})")
 
@@ -890,6 +895,67 @@ async def run_tests():
     await bot.handle_route(mock_upd_19, mock_ctx_19)
     assert any("COMMAND DIRECTORY" in t for t in mock_msg_19.sent_texts), "Plain 'help' intent not routed"
     print("   • Plain Command Routing ('Profile', 'help'): Verified zero station code error")
+
+    # Step 9: User triggers Remove Passenger via intent routing 'remove passenger'
+    mock_msg_19.text = "remove passenger"
+    await bot.handle_route(mock_upd_19, mock_ctx_19)
+    assert any("WHICH PASSENGER DO YOU WANT TO REMOVE" in t for t in mock_msg_19.sent_texts), "Missing remove passenger selection prompt"
+    last_markup = mock_msg_19.sent_markups[-1]
+    cb_datas = [b.callback_data for row in last_markup.inline_keyboard for b in row]
+    assert "del_p_ask_0" in cb_datas, "Missing button for passenger 0 (Visweswara Rao)"
+    assert "del_p_ask_1" in cb_datas, "Missing button for passenger 1 (Harish)"
+    assert "del_p_ask_all" in cb_datas, "Missing button for removing all passengers"
+
+    # Step 10: User selects passenger 0 (Visweswara Rao) -> Bot asks for confirmation
+    class MockCallbackQuery:
+        def __init__(self, data, user_id, message):
+            self.data = data
+            self.from_user = type("MockUser", (), {"id": user_id})()
+            self.message = message
+            self.answered_alerts = []
+
+        async def answer(self, text=None, show_alert=False):
+            if text:
+                self.answered_alerts.append(text)
+
+    cb_query_ask = MockCallbackQuery("del_p_ask_0", test_user_id, mock_msg_19)
+    mock_cb_upd_ask = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": mock_msg_19,
+        "callback_query": cb_query_ask
+    })()
+    await bot.handle_callback_query(mock_cb_upd_ask, mock_ctx_19)
+    assert any("CONFIRM PASSENGER REMOVAL" in t for t in mock_msg_19.sent_texts), "Missing confirmation prompt"
+    assert any("Visweswara Rao" in t for t in mock_msg_19.sent_texts), "Missing passenger name in confirmation prompt"
+    confirm_markup = mock_msg_19.sent_markups[-1]
+    confirm_datas = [b.callback_data for row in confirm_markup.inline_keyboard for b in row]
+    assert "del_p_confirm_0" in confirm_datas, "Missing confirmation button for passenger 0"
+
+    # Step 11: User confirms deletion of Visweswara Rao
+    cb_query_conf = MockCallbackQuery("del_p_confirm_0", test_user_id, mock_msg_19)
+    mock_cb_upd_conf = type("MockUpdate", (), {
+        "effective_user": type("MockUser", (), {"id": test_user_id})(),
+        "effective_message": mock_msg_19,
+        "callback_query": cb_query_conf
+    })()
+    await bot.handle_callback_query(mock_cb_upd_conf, mock_ctx_19)
+    assert any("removed from Master List" in a for a in cb_query_conf.answered_alerts), "Missing deletion alert confirmation"
+
+    # Verify Visweswara Rao is deleted and Harish is preserved!
+    remaining_p = await storage.get_passenger_profiles(test_user_id)
+    assert len(remaining_p) == 1, f"Expected 1 remaining passenger, got {len(remaining_p)}"
+    assert remaining_p[0]["name"] == "Harish", f"Expected Harish to remain, got {remaining_p[0]['name']}"
+    print("   • Selective Passenger Removal with Confirmation Check: Verified (Visweswara Rao removed, Harish kept)")
+
+    # Step 12: Direct numeric e-Wallet balance update (e.g. typing '300' like in user screenshot)
+    mock_msg_19.text = "300"
+    await bot.handle_route(mock_upd_19, mock_ctx_19)
+    assert any("IRCTC e-Wallet Balance Updated" in t for t in mock_msg_19.sent_texts), "Direct balance 300 not intercepted"
+    assert any("₹300.00" in t for t in mock_msg_19.sent_texts), "Balance 300 text mismatch"
+    assert "Please enter valid station codes" not in mock_msg_19.sent_texts[-1], "Incorrect station code error triggered on numeric balance"
+    cur_bal_300 = await storage.get_user_ewallet_balance(test_user_id)
+    assert cur_bal_300 == 300.0, f"Expected 300.0, got {cur_bal_300}"
+    print("   • Direct Numeric Balance Input ('300'): Verified 0 station code error & balance updated")
     print("✅ Multi-Flow State Isolation & Seamless Re-entry: PASSED")
 
     print("\n" + "=" * 60)

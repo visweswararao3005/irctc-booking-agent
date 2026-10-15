@@ -292,13 +292,23 @@ async def delete_passenger_profile(telegram_id: int, p_name_or_idx: Any) -> bool
             profiles = [users[user_key]["passenger_profile"]]
 
         orig_len = len(profiles)
+        idx_to_pop = None
         if isinstance(p_name_or_idx, int) and 0 <= p_name_or_idx < len(profiles):
-            profiles.pop(p_name_or_idx)
+            idx_to_pop = p_name_or_idx
+        elif isinstance(p_name_or_idx, str) and p_name_or_idx.strip().isdigit():
+            val = int(p_name_or_idx.strip())
+            if 0 <= val < len(profiles):
+                idx_to_pop = val
+
+        if idx_to_pop is not None:
+            profiles.pop(idx_to_pop)
         else:
             search_str = str(p_name_or_idx).strip().lower()
-            profiles = [p for p in profiles if p.get("name", "").lower() != search_str and str(p.get("id")) != search_str]
+            profiles = [p for p in profiles if p.get("name", "").lower() != search_str and str(p.get("id")).lower() != search_str]
 
         if len(profiles) < orig_len:
+            for i, p in enumerate(profiles):
+                p["id"] = f"p_{i+1}"
             users[user_key]["passenger_profiles"] = profiles
             if profiles:
                 users[user_key]["passenger_profile"] = profiles[0]

@@ -165,6 +165,8 @@ async def run_bot():
             CommandHandler("wallet", bot.cmd_wallet),
             CommandHandler("ewallet", bot.cmd_wallet),
             CommandHandler("balance", bot.cmd_wallet),
+            CommandHandler("remove_passenger", bot.start_remove_passenger),
+            CommandHandler("delete_passenger", bot.start_remove_passenger),
             CommandHandler("reset_profile", bot.cmd_reset_profile),
             CommandHandler("reset_account", bot.cmd_reset_account),
             CommandHandler("reset_wallet", bot.cmd_reset_wallet),
@@ -198,6 +200,8 @@ async def run_bot():
     app.add_handler(CommandHandler("tasks", bot.cmd_tasks))
     app.add_handler(CommandHandler("profile", bot.cmd_profile))
     app.add_handler(CommandHandler("passenger", bot.cmd_profile))
+    app.add_handler(CommandHandler("remove_passenger", bot.start_remove_passenger))
+    app.add_handler(CommandHandler("delete_passenger", bot.start_remove_passenger))
     app.add_handler(CommandHandler("reset_profile", bot.cmd_reset_profile))
     app.add_handler(MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking))
     app.add_handler(CommandHandler("account", bot.cmd_account))

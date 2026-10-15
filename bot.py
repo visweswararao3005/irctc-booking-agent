@@ -709,8 +709,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/change_account` (or `/set_account`) — Link or update your IRCTC Username & Password.\n"
         "• `/reset_account` — Permanently delete your IRCTC login credentials from this chat.\n\n"
         "👤 *PASSENGER PROFILE:*\n"
-        "• `/profile` (or `/passenger`) — View your saved default passenger profile & e-Wallet summary.\n"
-        "• `/create_profile` (or `/set_profile`) — Setup or update default traveler details (Name, Age, Gender, Berth).\n"
+        "• `/profile` (or `/passenger`) — View your Master Passenger List & linked account status.\n"
+        "• `/create_profile` (or `/add_passenger`) — Add traveler details to your Master List (Name, Age, Gender, Berth).\n"
+        "• `/remove_passenger` (or `/delete_passenger`) — Selectively remove a passenger with confirmation check.\n"
         "• `/reset_profile` — Erase all saved profile data (passenger, credentials, wallet) to start fresh.\n\n"
         "🔍 *SYSTEM & VERIFICATION:*\n"
         "• `/info` — Comprehensive end-to-end architectural guide & official IRCTC charting rules.\n"
@@ -913,6 +914,75 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup(kb_buttons)
     await safe_reply(update.effective_message, msg, reply_markup=kb, parse_mode="Markdown")
 
+async def start_remove_passenger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Interactive flow to remove passenger(s) from Master List:
+    - If 0 passengers: Informs user that list is empty.
+    - If 1 passenger: Asks for confirmation to delete that specific passenger.
+    - If >1 passengers: Prompts user to select WHICH passenger to delete, with confirmation step.
+    """
+    tg_id = update.effective_user.id
+    profiles = await storage.get_passenger_profiles(tg_id)
+    effective_msg = update.effective_message
+
+    if not profiles:
+        msg = (
+            "ℹ️ *No Passengers Saved*\n\n"
+            "Your Master Passenger List is currently empty.\n"
+            "Use `/create_profile` or `/profile` to add a new traveler."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👤 ➕ Add Passenger", callback_data="btn_create_profile")],
+            [InlineKeyboardButton("🔙 Back to Profile", callback_data="info_view_profile")]
+        ])
+        if effective_msg:
+            await safe_reply(effective_msg, msg, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if len(profiles) == 1:
+        p = profiles[0]
+        confirm_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🗑️ Yes, Delete {p['name']}", callback_data="del_p_confirm_0")],
+            [InlineKeyboardButton("🔙 Cancel / Keep Passenger", callback_data="info_view_profile")]
+        ])
+        prompt = (
+            "⚠️ *CONFIRM PASSENGER REMOVAL*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Are you sure you want to remove passenger *{p['name']}* ({p['age']} yrs, {p['gender']}, {p.get('berth', 'No Preference')}) from your Master List?\n\n"
+            "👉 This passenger will no longer appear for 1-click booking."
+        )
+        if effective_msg:
+            await safe_reply(effective_msg, prompt, reply_markup=confirm_kb, parse_mode="Markdown")
+        return
+
+    # Multiple passengers: Ask which one to remove
+    kb = []
+    for idx, p in enumerate(profiles):
+        kb.append([
+            InlineKeyboardButton(f"❌ Remove: {p['name']} ({p['age']}y, {p['gender']})", callback_data=f"del_p_ask_{idx}")
+        ])
+    kb.append([
+        InlineKeyboardButton("⚠️ Remove All Passengers", callback_data="del_p_ask_all")
+    ])
+    kb.append([
+        InlineKeyboardButton("🔙 Cancel / Back to Profile", callback_data="info_view_profile")
+    ])
+
+    prompt = (
+        "🗑️ *WHICH PASSENGER DO YOU WANT TO REMOVE?*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Your Master List currently has *{len(profiles)} saved passengers*:\n\n"
+    )
+    for idx, p in enumerate(profiles, start=1):
+        prompt += f"  {idx}️⃣ *{p['name']}* ({p['age']} yrs, {p['gender']}, {p.get('berth', 'No Preference')})\n"
+    prompt += "\n👉 *Tap the passenger below that you wish to remove:*"
+
+    if effective_msg:
+        await safe_reply(effective_msg, prompt, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+
+cmd_remove_passenger = start_remove_passenger
+cmd_delete_passenger = start_remove_passenger
+
 async def cmd_reset_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reset all stored user data (passenger, IRCTC, e-Wallet) for this chat."""
     tg_id = update.effective_user.id
@@ -1099,6 +1169,28 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if is_cancel_command(text):
         return await cancel_booking(update, context)
 
+    # 0. Check if user typed a numeric wallet balance or balance command:
+    # (Matches "300", "₹300", "balance 300", "wallet balance 300", "/wallet balance 300", etc.)
+    bal_match = re.match(
+        r"^(?:(?:/wallet\s+balance|wallet\s+balance|/balance|balance)\s+)?(?:₹\s*)?(\d+(?:\.\d{1,2})?)$",
+        raw_text.strip(),
+        flags=re.IGNORECASE
+    )
+    if bal_match or (context.user_data.get("awaiting_balance") and re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", raw_text.strip())):
+        amt_str = bal_match.group(1) if bal_match else re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", raw_text.strip()).group(1)
+        val = float(amt_str)
+        tg_id = update.effective_user.id
+        await storage.save_user_ewallet_balance(tg_id, val)
+        context.user_data.pop("awaiting_balance", None)
+        await update.message.reply_text(
+            f"✅ *IRCTC e-Wallet Balance Updated!*\n\n"
+            f"• *Recorded Balance:* `₹{val:.2f}`\n"
+            f"• *Direct Auto-Debit Ready:* Funds are pre-verified for instant 0-second reservation strikes.\n\n"
+            "👉 To continue train booking, enter station codes as `SRC-DST` (e.g. `KJM-MAS` or `MAS-NLR`), or manage profile with `/profile`.",
+            parse_mode="Markdown"
+        )
+        return STATE_ROUTE
+
     # Intent routing for plain commands sent without slash (e.g. 'profile', 'help', 'wallet', 'tasks')
     intent = raw_text.lower()
     if intent in ["profile", "/profile", "passengers", "passenger", "my profile", "profiles"]:
@@ -1111,6 +1203,9 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return await cmd_tasks(update, context)
     if intent in ["add passenger", "create profile", "new profile"]:
         return await start_create_profile(update, context)
+    if intent in ["remove passenger", "/remove_passenger", "delete passenger", "/delete_passenger", "clear passenger", "delete traveler", "remove traveler"]:
+        await start_remove_passenger(update, context)
+        return STATE_ROUTE
 
     # Clean separators: support ' - ', '-', ' TO ', '->', '➔', '/', or spaces
     cleaned = re.sub(r"\s*(->|➔|TO|-|–|/)\s*", "-", text, flags=re.IGNORECASE).strip()
@@ -2336,10 +2431,77 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             pass
         return await cmd_tasks(update, context)
 
-    elif data == "reset_profile_passenger":
-        existing_p = await storage.get_passenger_profile(update.effective_user.id)
-        await storage.reset_passenger_profile(update.effective_user.id)
-        alert_msg = "🗑️ Passenger profile removed!" if existing_p else "ℹ️ No passenger profile was saved."
+    elif data in ["reset_profile_passenger", "btn_remove_passenger"]:
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        return await start_remove_passenger(update, context)
+
+    elif data.startswith("del_p_ask_"):
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        tg_id = update.effective_user.id
+        profiles = await storage.get_passenger_profiles(tg_id)
+
+        if data == "del_p_ask_all":
+            confirm_all_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑️ Yes, Clear All Passengers", callback_data="del_p_confirm_all")],
+                [InlineKeyboardButton("🔙 Cancel / Keep All", callback_data="info_view_profile")]
+            ])
+            prompt = (
+                "⚠️ *CONFIRM REMOVE ALL PASSENGERS*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Are you sure you want to remove *ALL ({len(profiles)}) passengers* from your Master List?\n\n"
+                "👉 All saved traveler names, ages, and berth preferences will be erased."
+            )
+            if update.effective_message:
+                await safe_reply(update.effective_message, prompt, reply_markup=confirm_all_kb, parse_mode="Markdown")
+            return
+
+        try:
+            idx = int(data.replace("del_p_ask_", ""))
+        except ValueError:
+            return await cmd_profile(update, context)
+
+        if 0 <= idx < len(profiles):
+            p = profiles[idx]
+            confirm_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🗑️ Yes, Delete {p['name']}", callback_data=f"del_p_confirm_{idx}")],
+                [InlineKeyboardButton("🔙 No, Cancel", callback_data="info_view_profile")]
+            ])
+            prompt = (
+                "⚠️ *CONFIRM PASSENGER REMOVAL*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Are you sure you want to remove passenger *{p['name']}* ({p['age']} yrs, {p['gender']}, {p.get('berth', 'No Preference')})?\n\n"
+                "👉 Your other saved travelers will remain untouched in your Master List."
+            )
+            if update.effective_message:
+                await safe_reply(update.effective_message, prompt, reply_markup=confirm_kb, parse_mode="Markdown")
+        else:
+            return await cmd_profile(update, context)
+
+    elif data.startswith("del_p_confirm_"):
+        tg_id = update.effective_user.id
+        if data == "del_p_confirm_all":
+            await storage.reset_passenger_profile(tg_id)
+            try:
+                await query.answer("🗑️ All passengers removed from Master List!", show_alert=True)
+            except Exception:
+                pass
+            return await cmd_profile(update, context)
+
+        try:
+            idx = int(data.replace("del_p_confirm_", ""))
+        except ValueError:
+            return await cmd_profile(update, context)
+
+        profiles = await storage.get_passenger_profiles(tg_id)
+        p_name = profiles[idx]["name"] if (0 <= idx < len(profiles)) else "Passenger"
+        deleted = await storage.delete_passenger_profile(tg_id, idx)
+        alert_msg = f"🗑️ Passenger '{p_name}' removed from Master List!" if deleted else "ℹ️ Passenger not found."
         try:
             await query.answer(alert_msg, show_alert=True)
         except Exception:
@@ -2388,6 +2550,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer()
         except Exception:
             pass
+        context.user_data["awaiting_balance"] = True
         bal_kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("➕ ₹500", callback_data="quick_bal_500"),
@@ -2404,8 +2567,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         bal_prompt = (
             "💼 *RECORD / UPDATE IRCTC e-WALLET BALANCE*\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Tap a quick preset button below to record your balance in 1 tap, or enter any custom amount using:\n"
-            "👉 `/wallet balance <amount>` *(e.g. `/wallet balance 1500`)*\n\n"
+            "Tap a quick preset button below to record your balance in 1 tap, or *simply type any custom amount* directly in this chat (e.g. `300` or `1500`).\n\n"
+            "👉 *You can also use:* `/wallet balance <amount>` *(e.g. `/wallet balance 1500`)*\n\n"
             "🔗 *Official IRCTC Deposit Portal:* [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n\n"
             "✨ *Why this is needed:*\n"
             "Recording your deposit lets the Seat Sniper pre-verify funds and auto-debit tickets instantly with 0.0s latency!"
@@ -2627,6 +2790,39 @@ async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYP
     if len(parts) == 2 and parts[0].isalpha() and parts[1].isalpha() and len(parts[0]) <= 6 and len(parts[1]) <= 6:
         context.user_data.clear()
         return await handle_route(update, context)
+
+    # 4. Check if user typed a numeric wallet balance or balance command outside conversation
+    bal_match = re.match(
+        r"^(?:(?:/wallet\s+balance|wallet\s+balance|/balance|balance)\s+)?(?:₹\s*)?(\d+(?:\.\d{1,2})?)$",
+        text,
+        flags=re.IGNORECASE
+    )
+    if bal_match or (context.user_data.get("awaiting_balance") and re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", text)):
+        amt_str = bal_match.group(1) if bal_match else re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", text).group(1)
+        val = float(amt_str)
+        await storage.save_user_ewallet_balance(tg_id, val)
+        context.user_data.pop("awaiting_balance", None)
+        await update.message.reply_text(
+            f"✅ *IRCTC e-Wallet Balance Updated!*\n\n"
+            f"• *Recorded Balance:* `₹{val:.2f}`\n"
+            f"• *Direct Auto-Debit Ready:* Funds are pre-verified for instant 0-second reservation strikes.\n\n"
+            "👉 Send `/book` to start booking or `/profile` to view saved details.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # 5. Intent routing for plain commands sent without slash outside conversation
+    lower_text = text.lower().strip()
+    if lower_text in ["profile", "passengers", "passenger", "my profile", "profiles"]:
+        return await cmd_profile(update, context)
+    if lower_text in ["help", "commands", "menu"]:
+        return await cmd_help(update, context)
+    if lower_text in ["wallet", "balance", "ewallet", "my wallet"]:
+        return await cmd_wallet(update, context)
+    if lower_text in ["tasks", "task", "status", "active tasks", "my bookings"]:
+        return await cmd_tasks(update, context)
+    if lower_text in ["remove passenger", "delete passenger", "clear passenger", "delete traveler", "remove traveler"]:
+        return await start_remove_passenger(update, context)
 
     # Normal unrecognized message outside conversation
     await update.message.reply_text(
