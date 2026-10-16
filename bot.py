@@ -2342,13 +2342,16 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Passenger:* {u['p_name']}, Age {u['p_age']} ({u['p_gender']})\n"
         f"• *Berth:* {u['p_berth']}\n"
         f"{payment_line}\n"
-        f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
-        f"  • *Chart Rule:* {open_est['chart_rule_note']}\n"
+        f"🎯 *3-STAGE AUTONOMOUS PIPELINE:*\n"
+        f"• *Stage 1 (Live Check):* Status is `{u.get('class_status', '')}`\n"
+        f"• *Stage 2 (Tatkal Quota Strike):* `{open_est['tatkal_time']} IST`\n"
+        f"• *Stage 3 (Chart Prep Watchdog):* `{open_est['chart_1_time']} IST`\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🎯 *CHOOSE EXECUTION MODE:*\n\n"
         "1️⃣ *🎯 SEAT AVAILABILITY SNIPER* (Recommended)\n"
         "   • Never books Waiting List! Continually monitors the train 24/7.\n"
-        "   • When charting occurs and unutilized quotas release confirmed berths (or someone cancels), the agent strikes and books the confirmed seat instantly with direct eWallet auto-debit!\n\n"
+        "   • Multi-Stage Engine checks Tatkal at opening (10/11 AM), then unutilized quotas at Charting!\n"
+        "   • If any stage books a confirmed seat, it halts all future steps immediately!\n\n"
         "2️⃣ *⚡ BOOK NOW*\n"
         "   • Attempts immediate live booking right away.\n\n"
         "👉 Tap an option below:"
@@ -2476,8 +2479,8 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "status": "WL"
     }]
 
-    # Check live seat status
-    avail = await irctc_svc.check_availability(u["train_number"], u["date"], u["coach_class"], u["source"], u["dest"])
+    # Check live seat status (Stage 1: Live Availability Check)
+    avail = await irctc_svc.check_availability(u["train_number"], u["date"], u["coach_class"], u["source"], u["dest"], quota="GN")
     open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
     from scheduler import compute_dynamic_polling_interval
     interval_sec, phase_desc = compute_dynamic_polling_interval(open_est.get("seconds_until_strike", 3600))
@@ -2494,6 +2497,11 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "departure_time": u.get("departure", "00:15"),
         "payment_method": "IRCTC eWallet",
         "booking_mode": booking_mode,
+        "pipeline_stage": open_est.get("target_stage", "STAGE_3_CHARTING"),
+        "tatkal_time": open_est.get("tatkal_time"),
+        "tatkal_timestamp": open_est.get("tatkal_timestamp"),
+        "chart_1_time": open_est.get("chart_1_time"),
+        "chart_1_timestamp": open_est.get("chart_1_timestamp"),
         "passengers": passengers,
         "latest_status": avail["status"],
         "polling_interval": interval_sec,
@@ -2513,20 +2521,21 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     task_id = await storage.add_task(task_data)
 
-    if booking_mode == "INSTANT" and avail["is_available"]:
+    if (booking_mode == "INSTANT" or avail["is_available"]) and avail["is_available"] and not any(x in avail.get("status", "").upper() for x in ["WL", "WAITING", "RAC", "REGRET"]):
+        # Stage 1 Success: Seats are already available!
         await safe_reply(
             update.message,
-            "⚡ *Launching Instant Direct Auto-Booking on IRCTC...*",
+            "⚡ *Stage 1 Instant Hit: Confirmed seats currently available! Launching direct auto-booking on IRCTC...*",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )
         if global_scheduler:
             await global_scheduler.check_and_process_task(await storage.get_task(task_id), is_manual=False)
     else:
-        # Sniper Mode Activated
+        # Multi-Stage Sniper Mode Activated (Stages 2 & 3)
         await safe_reply(
             update.message,
-            "🎯 *Seat Sniper activated! Initializing live reservation watchdog...*",
+            "🎯 *3-Stage Autonomous Reservation Sniper activated! Initializing live reservation watchdog...*",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )
@@ -2535,29 +2544,34 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             watchdog_mode_info = (
                 f"• *Watchdog Start Time:* `{open_est['watchdog_start_time']} IST`\n"
                 f"• *Monitoring Mode:* 💤 `SCHEDULED SLEEP`\n"
-                f"  • *Schedule Note:* Dormant sleep; zero 15-min polling spam. Active looping begins 1h before chart prep.\n"
+                f"  • *Schedule Note:* Dormant sleep; zero spam. Active polling loop begins 1h before strike.\n"
             )
         else:
             watchdog_mode_info = (
                 f"• *Monitoring Mode:* ⚡ `ACTIVE LOOPING` (Polling every {interval_sec}s)\n"
             )
 
+        active_stage_str = "Stage 2: Tatkal Quota Strike (10 AM / 11 AM)" if open_est.get("target_stage") == "STAGE_2_TATKAL" else "Stage 3: Chart Preparation Watchdog"
+
         initial_card = (
-            f"🎯 *SEAT AVAILABILITY SNIPER ACTIVATED!*\n"
+            f"🎯 *3-STAGE AUTONOMOUS RESERVATION SNIPER ACTIVATED!*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• *Task ID:* `{task_id}`\n"
             f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')} ({u['coach_class']})\n"
             f"• *Route:* {u['source']} ➔ {u['dest']} ({u['date']})\n"
-            f"• *Current Status:* `{avail['status']}`\n"
             f"• *Payment Rail:* `Official IRCTC eWallet` (Direct Auto-Debit)\n"
-            f"• *Pre-Flight Balance:* `₹{bal_check['current_balance']:.2f}` (Verified >= ₹{bal_check['total_required']:.2f})\n"
-            f"• *Target:* Confirmed / Current Available Berths (CNF / `CURR_AVBL`)\n"
-            f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
-            f"  • *Chart Rule:* {open_est['chart_rule_note']}\n"
+            f"• *Pre-Flight Balance:* `₹{bal_check['current_balance']:.2f}` (Verified >= ₹{bal_check['total_required']:.2f})\n\n"
+            f"🚀 *AUTONOMOUS PIPELINE STAGES:*\n"
+            f"1️⃣ *Stage 1 (Live Check):* `{avail['status']}` _(Holding fire; no WL booking)_\n"
+            f"2️⃣ *Stage 2 (Tatkal Quota Strike):* `{open_est['tatkal_time']} IST`\n"
+            f"3️⃣ *Stage 3 (Chart Preparation):* `{open_est['chart_1_time']} IST`\n\n"
+            f"• *Active Target:* `{active_stage_str}`\n"
+            f"• *Target Strike Time:* `{open_est['target_strike_time']} IST`\n"
             f"{watchdog_mode_info}\n"
-            f"⚡ *100% DIRECT AUTO-BOOKING GUARANTEE:*\n"
-            f"• **Zero user action required!** When seats open, the agent auto-debits your eWallet and confirms your booking in 0.0s.\n"
-            f"• Your CRIS PNR and official PDF Electronic Reservation Slip (ERS) will appear directly in this chat!\n\n"
+            f"⚡ *100% DIRECT AUTO-BOOKING & STOP GUARANTEE:*\n"
+            f"• **Zero user action required!** If any stage gets a confirmed berth, the agent auto-debits your eWallet in 0.0s.\n"
+            f"• The task immediately halts all subsequent monitoring steps once confirmed!\n"
+            f"• Your CRIS PNR and official PDF ticket will be delivered directly in this chat.\n\n"
             f"👉 Click *'Try Now'* below to test a live check anytime! 👇"
         )
         keyboard = InlineKeyboardMarkup([

@@ -119,23 +119,24 @@ class BackgroundBookingWorker:
         now_dt = now_ist()
         now_str = format_ist_time(now_dt, include_seconds=True, fmt_12h=True)
 
-        # Query availability
-        avail = await self.service.check_availability(train_no, date, coach_class, source, dest)
-        await storage.update_task(task_id, {
-            "attempts_count": attempts,
-            "last_checked": now_str,
-            "last_checked_timestamp": now_dt.timestamp(),
-            "latest_status": avail["status"],
-            "polling_interval": interval_sec,
-            "phase_desc": phase_desc,
-            "target_strike_time": open_est["target_strike_time"],
-            "target_strike_timestamp": open_est["target_strike_timestamp"],
-            "target_label": open_est["target_label"],
-            "watchdog_start_time": open_est["watchdog_start_time"],
-            "watchdog_start_timestamp": open_est["watchdog_start_timestamp"],
-            "is_watchdog_active": is_active,
-            "chart_rule_note": open_est["chart_rule_note"]
-        })
+        # Multi-Stage Autonomous Pipeline Management
+        stage = task.get("pipeline_stage") or open_est.get("target_stage", "STAGE_3_CHARTING")
+        tatkal_ts = task.get("tatkal_timestamp") or open_est.get("tatkal_timestamp", 0)
+        now_ts = now_dt.timestamp()
+
+        # Quota selection based on multi-stage pipeline:
+        quota_to_check = "GN"
+        if stage == "STAGE_2_TATKAL":
+            # If current time is at or after Tatkal opening time (10:00/11:00 AM IST)
+            if now_ts >= tatkal_ts:
+                quota_to_check = "TQ"
+            else:
+                quota_to_check = "GN"
+        else:
+            quota_to_check = "GN"
+
+        # Query availability with appropriate quota
+        avail = await self.service.check_availability(train_no, date, coach_class, source, dest, quota=quota_to_check)
 
         tag = "⚡ MANUAL TRY NOW" if is_manual else f"🔄 AUTOMATIC TRY #{attempts}"
 
@@ -147,31 +148,70 @@ class BackgroundBookingWorker:
 
         if can_book:
             # SEAT AVAILABLE & CONFIRMED! Initiate Booking Workflow
+            booked_quota_name = "Tatkal (TQ)" if quota_to_check == "TQ" else "General (GN) / Charting Release"
             status_text = (
                 f"⚡⚡🎯 *TARGET ACQUIRED! CONFIRMED SEATS RELEASED!* 🎯⚡⚡\n\n"
                 f"{tag} at `{now_str}`\n"
                 f"• *Train:* {train_no} ({coach_class})\n"
+                f"• *Quota:* `{booked_quota_name}`\n"
                 f"• *Status:* {avail['status']}\n"
                 f"• *Seats Open:* {avail.get('seats', 1)} Berths\n\n"
                 f"⚡ *Sniper Triggered! Firing instant booking strike...*"
             )
             await self._send_or_edit_status(chat_id, task_id, status_text, keyboard=None)
+            task["booking_quota"] = quota_to_check
             await self._execute_booking_flow(task, avail)
-            return {"status": "BOOKED", "details": avail}
+            return {"status": "BOOKED", "stage": stage, "quota": quota_to_check, "details": avail}
         else:
+            # Check if Tatkal window has expired or Tatkal quota was exhausted:
+            # If in STAGE_2_TATKAL and Tatkal has opened and seats were unavailable:
+            if stage == "STAGE_2_TATKAL" and (now_ts >= tatkal_ts + 60 or (is_manual and now_ts >= tatkal_ts)):
+                stage = "STAGE_3_CHARTING"
+                chart_target_time = open_est["chart_1_time"]
+                advance_alert = (
+                    f"ℹ️ *Stage 2 (Tatkal Window) Complete:*\n"
+                    f"Tatkal berths unavailable or sold out.\n\n"
+                    f"⚡ *Seamlessly advancing to Stage 3: Chart Preparation Watchdog!*\n"
+                    f"• *Target:* Unutilized Emergency Quotas (EQ/HQ) & Current Booking (`CURR_AVBL`)\n"
+                    f"• *Estimated Chart Prep:* `{chart_target_time} IST`"
+                )
+                try:
+                    await self.bot_app.bot.send_message(chat_id=chat_id, text=advance_alert, parse_mode="Markdown")
+                except Exception:
+                    pass
+
+            await storage.update_task(task_id, {
+                "attempts_count": attempts,
+                "pipeline_stage": stage,
+                "last_checked": now_str,
+                "last_checked_timestamp": now_dt.timestamp(),
+                "latest_status": avail["status"],
+                "polling_interval": interval_sec,
+                "phase_desc": phase_desc,
+                "target_strike_time": open_est["target_strike_time"],
+                "target_strike_timestamp": open_est["target_strike_timestamp"],
+                "target_label": open_est["target_label"],
+                "watchdog_start_time": open_est["watchdog_start_time"],
+                "watchdog_start_timestamp": open_est["watchdog_start_timestamp"],
+                "is_watchdog_active": is_active,
+                "chart_rule_note": open_est["chart_rule_note"]
+            })
+
             # Still in Waiting List / Charting Pending -> Send update to user
             mode_desc = tag if is_manual else ("🎯 [SEAT SNIPER WATCHDOG ACTIVE]" if is_sniper else tag)
             quota_line = f"• *Class Quota:* `{avail.get('quota')} Berths`\n" if avail.get("quota") else ""
+            active_stage_name = "Stage 2: Tatkal Quota Strike (10 AM / 11 AM)" if stage == "STAGE_2_TATKAL" else "Stage 3: Chart Preparation Watchdog"
             chart_line = (
-                f"• *Estimated Chart Prep:* `{open_est['target_strike_time']} IST`\n"
-                f"  • *Chart Rule:* {open_est['chart_rule_note']}\n"
+                f"• *Pipeline Stage:* `{active_stage_name}`\n"
+                f"• *Target Strike Time:* `{open_est['target_strike_time']} IST`\n"
+                f"  • *Rule:* {open_est['chart_rule_note']}\n"
             )
 
             if not is_active:
                 watchdog_mode_line = (
                     f"• *Watchdog Start Time:* `{open_est['watchdog_start_time']} IST`\n"
                     f"• *Monitoring Mode:* 💤 `SCHEDULED SLEEP`\n"
-                    f"  • *Schedule Note:* Dormant sleep; zero 15-min spam. Active polling loop starts 1 hr before chart prep.\n"
+                    f"  • *Schedule Note:* Dormant sleep; zero 15-min spam. Active polling loop starts 1 hr before target time.\n"
                 )
             else:
                 watchdog_mode_line = (
@@ -191,11 +231,11 @@ class BackgroundBookingWorker:
                 f"{watchdog_mode_line}"
                 f"• *Total Checks:* `{attempts}`\n\n"
                 f"🛡️ *Sniper is holding fire. It will NEVER book Waiting List.*\n"
-                f"As chart preparation approaches (T-60m ➔ T-30m ➔ T-10m), the retry rate automatically accelerates to hit the exact spot when unutilized berths drop into the reservation pool!"
+                f"If any stage secures a confirmed berth, it books instantly via IRCTC e-Wallet and halts all subsequent steps!"
             )
             keyboard = self.get_monitoring_keyboard(task_id)
             await self._send_or_edit_status(chat_id, task_id, status_text, keyboard=keyboard)
-            return {"status": "STILL_WAITING", "details": avail}
+            return {"status": "STILL_WAITING", "stage": stage, "details": avail}
 
     async def _send_or_edit_status(self, chat_id: int, task_id: str, text: str, keyboard=None):
         """Sends status message or updates previous message in-place to avoid spam."""
@@ -320,6 +360,9 @@ class BackgroundBookingWorker:
             p_age = int(p_info.get("age", 25))
             p_gender = p_info.get("gender", "M")
 
+            booked_quota = task.get("booking_quota", "GN")
+            quota_label = "Tatkal (TQ)" if booked_quota == "TQ" else "General (GN) / Charting Release"
+
             booking_data = {
                 "pnr": cris_pnr,
                 "train_number": task["train_number"],
@@ -328,6 +371,7 @@ class BackgroundBookingWorker:
                 "dest": task["dest_stn"],
                 "journey_date": task["journey_date"],
                 "coach_class": task["coach_class"],
+                "quota": booked_quota,
                 "fare": float(amount),
                 "passengers": [{
                     "name": p_name,
@@ -350,6 +394,7 @@ class BackgroundBookingWorker:
                 f"• <b>Official CRIS PNR:</b> <code>{cris_pnr}</code>\n"
                 f"• <b>Train:</b> {task['train_number']} ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
                 f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
+                f"• <b>Quota:</b> <code>{quota_label}</code>\n"
                 f"• <b>Passenger:</b> {p_name} ({p_age} yrs, {p_gender})\n"
                 f"• <b>Coach / Berth:</b> S4 / {p_berth}\n"
                 f"• <b>Status:</b> <b>CONFIRMED RESERVATION (CNF)</b>\n"

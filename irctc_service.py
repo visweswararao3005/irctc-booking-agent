@@ -23,6 +23,32 @@ BASE_FARES = {
     "EA": 1500.0
 }
 
+def get_tatkal_fare(base_fare: float, coach_class: str) -> float:
+    """
+    Computes official Indian Railways Tatkal surcharge:
+    - SL: 10% of base fare, min Rs. 100, max Rs. 175
+    - 3A / 3E: 30% of base fare, min Rs. 300, max Rs. 400
+    - 2A: 30% of base fare, min Rs. 400, max Rs. 500
+    - CC / EC: 30% of base fare, min Rs. 125, max Rs. 225
+    - 2S: 10% of base fare, min Rs. 10, max Rs. 15
+    - 1A: No Tatkal quota
+    """
+    c = coach_class.upper()
+    if c == "SL":
+        surcharge = max(100.0, min(175.0, base_fare * 0.10))
+    elif c in ["3A", "3E"]:
+        surcharge = max(300.0, min(400.0, base_fare * 0.30))
+    elif c == "2A":
+        surcharge = max(400.0, min(500.0, base_fare * 0.30))
+    elif c in ["CC", "EC"]:
+        surcharge = max(125.0, min(225.0, base_fare * 0.30))
+    elif c == "2S":
+        surcharge = max(10.0, min(15.0, base_fare * 0.10))
+    else:
+        surcharge = 0.0
+    return round(base_fare + surcharge, 2)
+
+
 class IRCTCService:
     def __init__(self):
         # Simulated dynamic inventory per train & class
@@ -30,8 +56,9 @@ class IRCTCService:
         # Cache for real train metadata (classes, names, etc.)
         self.train_cache: Dict[str, Dict[str, Any]] = {}
 
-    def _get_key(self, train_no: str, journey_date: str) -> str:
-        return f"{train_no}_{journey_date}"
+    def _get_key(self, train_no: str, journey_date: str, quota: str = "GN") -> str:
+        q = (quota or "GN").upper()
+        return f"{train_no}_{journey_date}_{q}"
 
     def _parse_live_availability(self, raw_avl: Optional[str], display_name: Optional[str], fare_val: Any, prediction: str = "") -> Dict[str, Any]:
         """
@@ -176,7 +203,7 @@ class IRCTCService:
                     avl_classes.sort(key=lambda c: priority.index(c) if c in priority else 99)
 
                     # Extract live availability and fares
-                    t_key = self._get_key(num, journey_date)
+                    t_key = self._get_key(num, journey_date, quota="GN")
                     if t_key not in self.inventory:
                         self.inventory[t_key] = {}
 
@@ -356,7 +383,7 @@ class IRCTCService:
             if not valid_classes:
                 valid_classes = ["SL", "3A", "2A"]
 
-        t_key = self._get_key(train_no, journey_date)
+        t_key = self._get_key(train_no, journey_date, quota="GN")
         if t_key not in self.inventory:
             self.inventory[t_key] = {}
 
@@ -487,33 +514,53 @@ class IRCTCService:
 
         now = now_ist()
 
-        # Determine target strike window (the primary unutilized quota release)
-        if now < chart_1_dt:
+        # Determine target strike window across Multi-Stage Pipeline:
+        # Stage 2: Tatkal Opening (1 day prior at 10:00/11:00 AM IST)
+        # Stage 3: Chart 1 Prep (4 hours prior or previous evening at 20:00 IST)
+        # Stage 3b: Chart 2 Prep (30 mins prior - CURR_AVBL)
+        if now < tatkal_dt and coach_class.upper() != "1A":
+            target_dt = tatkal_dt
+            target_label = "Stage 2: Tatkal Quota Opening Strike (10:00/11:00 AM)"
+            target_stage = "STAGE_2_TATKAL"
+        elif now < chart_1_dt:
             target_dt = chart_1_dt
-            target_label = "1st Chart Preparation (Unutilized Quota Release)"
+            target_label = "Stage 3: 1st Chart Preparation (Unutilized Quota Release)"
+            target_stage = "STAGE_3_CHARTING"
         elif now < chart_2_dt:
             target_dt = chart_2_dt
-            target_label = "2nd Chart Preparation (Current Booking / CURR_AVBL)"
+            target_label = "Stage 3: 2nd Chart Preparation (Current Booking / CURR_AVBL)"
+            target_stage = "STAGE_3_CHARTING"
         else:
             target_dt = train_dep_dt
             target_label = "Final Departure Clearance"
+            target_stage = "STAGE_3_CHARTING"
 
         diff_sec = (target_dt - now).total_seconds()
 
-        # Watchdog Start Trigger Point: Dormant sleep until 1 hour before target strike
-        watchdog_start_dt = target_dt - datetime.timedelta(hours=1)
+        # Watchdog Start Trigger Point for Chart Preparation: 1 hour before Chart 1
+        watchdog_start_dt = chart_1_dt - datetime.timedelta(hours=1)
         sec_until_watchdog_start = (watchdog_start_dt - now).total_seconds()
         is_watchdog_active = sec_until_watchdog_start <= 0
+
+        # Tatkal Watchdog Start Point: 1 hour before Tatkal opening
+        tatkal_watchdog_start_dt = tatkal_dt - datetime.timedelta(hours=1)
+        sec_until_tatkal_start = (tatkal_watchdog_start_dt - now).total_seconds()
 
         return {
             "train_departure": train_dep_dt.strftime("%Y-%m-%d %H:%M"),
             "chart_1_time": chart_1_dt.strftime("%Y-%m-%d %H:%M"),
+            "chart_1_timestamp": chart_1_dt.timestamp(),
             "chart_2_time": chart_2_dt.strftime("%Y-%m-%d %H:%M"),
+            "chart_2_timestamp": chart_2_dt.timestamp(),
             "tatkal_time": tatkal_dt.strftime("%Y-%m-%d %H:%M"),
+            "tatkal_timestamp": tatkal_dt.timestamp(),
+            "tatkal_watchdog_start_time": tatkal_watchdog_start_dt.strftime("%Y-%m-%d %H:%M"),
+            "tatkal_watchdog_start_timestamp": tatkal_watchdog_start_dt.timestamp(),
             "chart_rule_note": chart_rule_note,
             "target_strike_time": target_dt.strftime("%Y-%m-%d %H:%M"),
             "target_strike_timestamp": target_dt.timestamp(),
             "target_label": target_label,
+            "target_stage": target_stage,
             "seconds_until_strike": diff_sec,
             "watchdog_start_time": watchdog_start_dt.strftime("%Y-%m-%d %H:%M"),
             "watchdog_start_timestamp": watchdog_start_dt.timestamp(),
@@ -523,16 +570,17 @@ class IRCTCService:
         }
 
     async def check_availability(
-        self, train_no: str, journey_date: str, coach_class: str, source: str = "", dest: str = ""
+        self, train_no: str, journey_date: str, coach_class: str, source: str = "", dest: str = "", quota: str = "GN"
     ) -> Dict[str, Any]:
         """
         Check real-time availability.
-        Returns: { 'is_available': bool, 'status': str, 'display_status': str, 'seats': int, 'fare': float, 'quota': Optional[int], 'wl_count': int }
+        Returns: { 'is_available': bool, 'status': str, 'display_status': str, 'seats': int, 'fare': float, 'quota': Optional[int], 'wl_count': int, 'quota_type': str }
         Strictly reflects authentic Indian Railways status:
         - If unutilized quotas/cancellations haven't released berths, it is in WL.
         - NEVER fakes confirmed seats or generates synthetic availability.
         """
-        t_key = self._get_key(train_no, journey_date)
+        quota_upper = (quota or "GN").upper()
+        t_key = self._get_key(train_no, journey_date, quota=quota_upper)
         inv = self.inventory.get(t_key, {})
         c_info = inv.get(coach_class)
 
@@ -540,23 +588,31 @@ class IRCTCService:
         if not c_info or not c_info.get("is_simulated"):
             if source and dest:
                 await self._fetch_live_trains(source, dest, journey_date)
-                inv = self.inventory.get(t_key, {})
-                c_info = inv.get(coach_class)
+                inv_gn = self.inventory.get(self._get_key(train_no, journey_date, "GN"), {})
+                if quota_upper == "GN":
+                    c_info = inv_gn.get(coach_class)
+                else:
+                    c_info = self.inventory.get(t_key, {}).get(coach_class)
             elif t_key not in self.inventory:
                 await self.get_class_options_with_prices(train_no, source, dest, journey_date)
-                inv = self.inventory.get(t_key, {})
-                c_info = inv.get(coach_class)
+                inv_gn = self.inventory.get(self._get_key(train_no, journey_date, "GN"), {})
+                if quota_upper == "GN":
+                    c_info = inv_gn.get(coach_class)
+                else:
+                    c_info = self.inventory.get(t_key, {}).get(coach_class)
 
         train_info = self.train_cache.get(train_no, {})
         fares = train_info.get("fares", {})
         q_cnt = train_info.get("quotas", {}).get(coach_class)
+        base_fare = fares.get(coach_class, BASE_FARES.get(coach_class, 240.0))
+        fare_amt = get_tatkal_fare(base_fare, coach_class) if quota_upper == "TQ" else base_fare
 
         if not c_info:
             c_info = {
-                "status": "WL",
-                "display_status": "WL",
+                "status": "WL" if quota_upper == "GN" else "TATKAL_WL",
+                "display_status": "WL" if quota_upper == "GN" else "TQ_WL",
                 "seats": 0,
-                "fare": fares.get(coach_class, BASE_FARES.get(coach_class, 240.0)),
+                "fare": fare_amt,
                 "quota": q_cnt,
                 "wl_count": 50,
                 "is_available": False,
@@ -571,18 +627,19 @@ class IRCTCService:
             "status": c_info["status"],
             "display_status": c_info.get("display_status", c_info["status"]),
             "seats": c_info.get("seats", 0),
-            "fare": c_info.get("fare", 240.0),
+            "fare": c_info.get("fare", fare_amt),
             "quota": q_cnt,
+            "quota_type": quota_upper,
             "wl_count": c_info.get("wl_count", 0),
             "prediction": c_info.get("prediction", "")
         }
 
-    def simulate_cancellation_open_seats(self, train_no: str, journey_date: str, coach_class: str, count: int = 2):
+    def simulate_cancellation_open_seats(self, train_no: str, journey_date: str, coach_class: str, count: int = 2, quota: str = "GN"):
         """
         Helper method to simulate a passenger cancellation or chart release, making seats AVAILABLE.
         Used to verify that the Seat Sniper accurately detects confirmed berths when released.
         """
-        t_key = self._get_key(train_no, journey_date)
+        t_key = self._get_key(train_no, journey_date, quota=quota)
         if t_key not in self.inventory:
             self.inventory[t_key] = {}
         self.inventory[t_key][coach_class] = {
@@ -590,6 +647,25 @@ class IRCTCService:
             "display_status": f"AVL {count}",
             "seats": count,
             "fare": 240.0,
+            "wl_count": 0,
+            "is_available": True,
+            "is_simulated": True
+        }
+
+    def simulate_tatkal_open_seats(self, train_no: str, journey_date: str, coach_class: str, count: int = 2):
+        """
+        Helper method to simulate Tatkal quota berths becoming available.
+        Used to test Stage 2 Tatkal Quota strike and auto-stop.
+        """
+        t_key = self._get_key(train_no, journey_date, quota="TQ")
+        if t_key not in self.inventory:
+            self.inventory[t_key] = {}
+        tatkal_fare = get_tatkal_fare(BASE_FARES.get(coach_class, 240.0), coach_class)
+        self.inventory[t_key][coach_class] = {
+            "status": f"AVAILABLE {count} (TATKAL)",
+            "display_status": f"AVL {count} (TQ)",
+            "seats": count,
+            "fare": tatkal_fare,
             "wl_count": 0,
             "is_available": True,
             "is_simulated": True

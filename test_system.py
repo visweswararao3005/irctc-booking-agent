@@ -1133,6 +1133,97 @@ async def run_tests():
     print("   • Profile Name Prompt Inline Fallback: Saved successfully without 4 separate steps")
     print("✅ 1-Line Intelligent Passenger Auto-Parsing: PASSED")
 
+    # 22. Test 3-Stage Autonomous Reservation Pipeline (Live Check -> Tatkal Quota -> Charting Watchdog -> Auto-Stop)
+    print("\n[Test 22] Testing 3-Stage Autonomous Reservation Pipeline (Live Check -> Tatkal -> Charting -> Auto-Stop)...")
+    from scheduler import BackgroundBookingWorker
+    class MockPipeBotApp:
+        class MockBot:
+            def __init__(self):
+                self.messages = []
+                self.documents = []
+            async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+                self.messages.append({"chat_id": chat_id, "text": text})
+            async def send_document(self, chat_id, document, filename=None, caption=None):
+                self.documents.append({"chat_id": chat_id, "filename": filename, "caption": caption})
+            async def edit_message_text(self, **kwargs):
+                pass
+        def __init__(self):
+            self.bot = self.MockBot()
+
+    pipe_app = MockPipeBotApp()
+    pipe_worker = BackgroundBookingWorker(pipe_app, service)
+
+    test_pipeline_user = 99887766
+    await storage.save_user_ewallet_balance(test_pipeline_user, 1000.0)
+    await storage.save_user_credentials(test_pipeline_user, "pipe_user", "pass123")
+
+    # 22a. Stage 2: Tatkal Opening Strike & Auto-Stop
+    journey_future = (today_ist() + datetime.timedelta(days=2)).strftime("%Y-%m-%d")
+    task_tatkal = {
+        "task_id": "test_pipe_tatkal_1",
+        "telegram_id": test_pipeline_user,
+        "telegram_chat_id": 999999,
+        "train_number": "12840",
+        "train_name": "HOWRAH MAIL",
+        "coach_class": "3A",
+        "departure_time": "19:00",
+        "source_stn": "MAS",
+        "dest_stn": "HWH",
+        "journey_date": journey_future,
+        "payment_method": "IRCTC eWallet",
+        "booking_mode": "SNIPER",
+        "pipeline_stage": "STAGE_2_TATKAL",
+        "tatkal_timestamp": now_ist().timestamp() - 10,  # simulate Tatkal window open
+        "passengers": [{"name": "Rao", "age": 28, "gender": "M", "berth": "LB", "status": "WL"}]
+    }
+    task_id_tatkal = await storage.add_task(task_tatkal)
+    service.simulate_tatkal_open_seats("12840", journey_future, "3A", count=3)
+
+    res_pipe_tatkal = await pipe_worker.check_and_process_task(task_tatkal, is_manual=True)
+    assert res_pipe_tatkal["status"] == "BOOKED", f"Expected BOOKED, got {res_pipe_tatkal['status']}"
+    assert res_pipe_tatkal["quota"] == "TQ", f"Expected Tatkal quota TQ, got {res_pipe_tatkal['quota']}"
+    # Verify task deleted immediately upon booking (stops next stages)
+    task_after_tatkal = await storage.get_task(task_id_tatkal)
+    assert task_after_tatkal is None, "Task was not deleted upon booking (auto-stop failed)"
+    print("   • Stage 2 (Tatkal Quota Strike): Successfully booked Tatkal seat and auto-stopped task")
+
+    # 22b. Stage 3: Tatkal Miss -> Seamless Transition to Charting -> Auto-Stop
+    task_chart = {
+        "telegram_id": test_pipeline_user,
+        "telegram_chat_id": 999999,
+        "train_number": "12840",
+        "train_name": "HOWRAH MAIL",
+        "coach_class": "SL",
+        "departure_time": "19:00",
+        "source_stn": "MAS",
+        "dest_stn": "HWH",
+        "journey_date": journey_future,
+        "payment_method": "IRCTC eWallet",
+        "booking_mode": "SNIPER",
+        "pipeline_stage": "STAGE_2_TATKAL",
+        "tatkal_timestamp": now_ist().timestamp() - 120,  # Tatkal window passed
+        "passengers": [{"name": "Rao", "age": 28, "gender": "M", "berth": "LB", "status": "WL"}]
+    }
+    task_id_chart = await storage.add_task(task_chart)
+    # Tatkal has no seats (WL)
+    # Check should transition stage to STAGE_3_CHARTING
+    res_trans = await pipe_worker.check_and_process_task(task_chart, is_manual=True)
+    assert res_trans["status"] == "STILL_WAITING"
+    task_in_charting = await storage.get_task(task_id_chart)
+    assert task_in_charting["pipeline_stage"] == "STAGE_3_CHARTING", "Did not auto-transition to STAGE_3_CHARTING"
+    # Top up eWallet balance for Stage 3 booking
+    await storage.save_user_ewallet_balance(test_pipeline_user, 1000.0)
+
+    # Now unutilized quotas release at charting -> Charting strike books & stops
+    service.simulate_cancellation_open_seats("12840", journey_future, "SL", count=2, quota="GN")
+    res_chart_booked = await pipe_worker.check_and_process_task(task_in_charting, is_manual=True)
+    assert res_chart_booked["status"] == "BOOKED"
+    assert res_chart_booked["quota"] == "GN"
+    task_after_chart = await storage.get_task(task_id_chart)
+    assert task_after_chart is None, "Task was not deleted upon charting booking (auto-stop failed)"
+    print("   • Stage 3 (Chart Preparation): Successfully booked released berth and auto-stopped task")
+    print("✅ 3-Stage Autonomous Reservation Pipeline: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)
