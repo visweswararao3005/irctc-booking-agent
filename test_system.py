@@ -1245,17 +1245,41 @@ async def run_tests():
     assert chk_tatkal["shortfall"] == 291.80, f"Expected 291.80 shortfall, got {chk_tatkal['shortfall']}"
     print(f"   • Tatkal Surcharge Shortfall Detection: Verified (Detected ₹{chk_tatkal['shortfall']} shortfall for ₹961.80 Tatkal)")
 
-    # 23c. Origin Station Departure Time for Chart 1 calculation
-    est_orig = service.estimate_ticket_opening(
+    # 23c. Origin Station Departure Time for Chart 1 calculation (-4h from Train Source)
+    # Case 1: Morning origin departure (<14:00) -> previous night 20:00 IST
+    est_orig_morn = service.estimate_ticket_opening(
         "12603",
         "16:30",  # Boarding station departure in afternoon
         journey_future,
         "SL",
         origin_departure_time_str="08:00"  # Train origin station departure in morning
     )
-    assert est_orig["is_morning_rule"] is True, "Origin morning departure did not trigger morning rule"
-    assert "20:00" in est_orig["chart_1_time"], f"Expected 20:00 Chart 1, got {est_orig['chart_1_time']}"
-    print(f"   • Train Origin Departure Rule: Verified (Origin 08:00 AM -> Chart 1 at previous evening 20:00 IST)")
+    assert est_orig_morn["is_morning_rule"] is True, "Origin morning departure did not trigger morning rule"
+    assert "20:00" in est_orig_morn["chart_1_time"], f"Expected 20:00 Chart 1, got {est_orig_morn['chart_1_time']}"
+
+    # Case 2: Afternoon origin departure (>=14:00) -> strictly -4 hours from source departure (16:00 - 4h = 12:00)
+    est_orig_afternoon = service.estimate_ticket_opening(
+        "12840",
+        "21:00",  # Boarding station at night
+        journey_future,
+        "3A",
+        origin_departure_time_str="16:00"  # Origin station departure at 16:00
+    )
+    assert est_orig_afternoon["is_morning_rule"] is False
+    assert "12:00" in est_orig_afternoon["chart_1_time"], f"Expected 12:00 Chart 1 (-4h from 16:00), got {est_orig_afternoon['chart_1_time']}"
+
+    # Case 3: Overnight train (Origin 22:00 yesterday -> Boarding 04:00 today) -> -4h from 22:00 = 18:00 yesterday
+    prev_day_str = (datetime.datetime.strptime(journey_future, "%Y-%m-%d").date() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    est_orig_overnight = service.estimate_ticket_opening(
+        "12626",
+        "04:00",  # Boarding station early morning
+        journey_future,
+        "2A",
+        origin_departure_time_str="22:00"  # Origin station departed yesterday night at 22:00
+    )
+    assert f"{prev_day_str} 18:00" in est_orig_overnight["chart_1_time"], f"Expected {prev_day_str} 18:00, got {est_orig_overnight['chart_1_time']}"
+
+    print(f"   • Train Origin -4h Departure Rule: Verified across Morning, Afternoon & Overnight origin stations")
 
     # 23d. Bounded Cache Eviction Logic
     dummy_cache = {f"k{i}": i for i in range(10)}

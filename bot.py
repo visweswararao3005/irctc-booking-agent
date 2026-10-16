@@ -1781,6 +1781,7 @@ async def handle_train_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["train_number"] = train_number
     context.user_data["train_name"] = train_info.get("name", "EXP")
     context.user_data["departure"] = train_info.get("departure", "00:00")
+    context.user_data["origin_departure"] = train_info.get("origin_departure", train_info.get("departure", "00:00"))
     context.user_data["arrival"] = train_info.get("arrival", "00:00")
     tg_id = update.effective_user.id
     await storage.save_user_session(tg_id, context.user_data)
@@ -2334,7 +2335,13 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"{bal_line}"
     )
 
-    open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
+    open_est = irctc_svc.estimate_ticket_opening(
+        u['train_number'],
+        u.get('departure', '00:15'),
+        u['date'],
+        u['coach_class'],
+        origin_departure_time_str=u.get('origin_departure')
+    )
 
     summary = (
         "📋 *JOURNEY BOOKING SUMMARY:*\n"
@@ -2351,6 +2358,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"• *Stage 1 (Live Check):* Status is `{u.get('class_status', '')}`\n"
         f"• *Stage 2 (Tatkal Quota Strike):* `{open_est['tatkal_time']} IST`\n"
         f"• *Stage 3 (Chart Prep Watchdog):* `{open_est['chart_1_time']} IST`\n"
+        f"  • *Official PRS Rule:* {open_est['chart_rule_note']}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🎯 *CHOOSE EXECUTION MODE:*\n\n"
         "1️⃣ *🎯 SEAT AVAILABILITY SNIPER* (Recommended)\n"
@@ -2486,7 +2494,13 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Check live seat status (Stage 1: Live Availability Check)
     avail = await irctc_svc.check_availability(u["train_number"], u["date"], u["coach_class"], u["source"], u["dest"], quota="GN")
-    open_est = irctc_svc.estimate_ticket_opening(u['train_number'], u.get('departure', '00:15'), u['date'], u['coach_class'])
+    open_est = irctc_svc.estimate_ticket_opening(
+        u['train_number'],
+        u.get('departure', '00:15'),
+        u['date'],
+        u['coach_class'],
+        origin_departure_time_str=u.get('origin_departure')
+    )
     from scheduler import compute_dynamic_polling_interval
     interval_sec, phase_desc = compute_dynamic_polling_interval(open_est.get("seconds_until_strike", 3600))
 
@@ -2500,6 +2514,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "train_name": u.get("train_name", "EXP"),
         "coach_class": u["coach_class"],
         "departure_time": u.get("departure", "00:15"),
+        "origin_departure_time": u.get("origin_departure", u.get("departure", "00:15")),
         "payment_method": "IRCTC eWallet",
         "booking_mode": booking_mode,
         "pipeline_stage": open_est.get("target_stage", "STAGE_3_CHARTING"),

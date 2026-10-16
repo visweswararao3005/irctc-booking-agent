@@ -102,12 +102,13 @@ class BackgroundBookingWorker:
         source = task["source_stn"]
         dest = task["dest_stn"]
 
-        # Calculate opening estimation and dynamic countdown
+        # Calculate opening estimation and dynamic countdown based on train source departure (-4h rule)
         open_est = self.service.estimate_ticket_opening(
             train_no,
             task.get("departure_time", "00:15"),
             date,
-            coach_class
+            coach_class,
+            origin_departure_time_str=task.get("origin_departure_time")
         )
         diff_sec = open_est.get("seconds_until_strike", 3600)
         sec_to_start = open_est.get("seconds_until_watchdog_start", 0)

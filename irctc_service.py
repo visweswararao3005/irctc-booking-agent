@@ -511,7 +511,7 @@ class IRCTCService:
         train_dep_dt = datetime.datetime.combine(j_date, dep_time, tzinfo=IST)
 
         # Lookup origin station departure time:
-        # Indian Railways calculates Chart 1 based on origin station departure time!
+        # Indian Railways calculates Chart 1 strictly -4 hours before train departure from ORIGIN / SOURCE station!
         train_info = self.train_cache.get(train_no, {})
         orig_dep_str = origin_departure_time_str or train_info.get("origin_departure") or departure_time_str
         try:
@@ -519,21 +519,26 @@ class IRCTCService:
         except Exception:
             orig_dep_time = dep_time
 
-        # 1. Chart 1 Preparation Calculation (based on train origin departure)
+        # Determine origin journey date:
+        # If train origin departure time is later than boarding departure time (e.g. Origin 22:00 -> Boarding 04:00 next morning),
+        # the train originated on the preceding calendar day!
+        orig_j_date = j_date - datetime.timedelta(days=1) if orig_dep_time > dep_time else j_date
+
+        # 1. Chart 1 Preparation Calculation (officially based on train origin/source departure)
         is_morning = orig_dep_time.hour < 14
         if is_morning:
             # Morning train rule: prepared previous night at 20:00 IST
-            prev_day = j_date - datetime.timedelta(days=1)
+            prev_day = orig_j_date - datetime.timedelta(days=1)
             chart_1_dt = datetime.datetime.combine(prev_day, datetime.time(hour=20, minute=0), tzinfo=IST)
             if orig_dep_str != departure_time_str:
-                chart_rule_note = f"Previous Evening 20:00 IST Rule (Origin Dep: {orig_dep_str})"
+                chart_rule_note = f"Previous Evening 20:00 IST Rule (Train Source Departure: {orig_dep_str} IST)"
             else:
                 chart_rule_note = "Previous Evening 20:00 IST Rule (Morning Train)"
         else:
-            orig_dep_dt = datetime.datetime.combine(j_date, orig_dep_time, tzinfo=IST)
+            orig_dep_dt = datetime.datetime.combine(orig_j_date, orig_dep_time, tzinfo=IST)
             chart_1_dt = orig_dep_dt - datetime.timedelta(hours=4)
             if orig_dep_str != departure_time_str:
-                chart_rule_note = f"4 Hours Prior to Origin Departure ({orig_dep_str})"
+                chart_rule_note = f"4 Hours Prior to Train Source Departure ({orig_dep_str} IST)"
             else:
                 chart_rule_note = "4 Hours Prior to Train Departure"
 
