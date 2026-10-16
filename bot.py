@@ -2316,11 +2316,16 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     ew_pin = await storage.get_decrypted_ewallet(tg_id)
     cur_bal = await storage.get_user_ewallet_balance(tg_id)
     fare = float(u.get("fare", 240))
+    coach_class = u.get("coach_class", "SL")
     bal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare)
+    tatkal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare, is_tatkal=True, coach_class=coach_class)
 
     ew_status = "Linked & Active"
     if bal_check["is_sufficient"]:
-        bal_line = f"• *eWallet Balance:* `₹{bal_check['current_balance']:.2f}` (✅ Sufficient for ₹{bal_check['total_required']:.2f})"
+        if tatkal_check["is_sufficient"]:
+            bal_line = f"• *eWallet Balance:* `₹{bal_check['current_balance']:.2f}` (✅ Sufficient for General ₹{bal_check['total_required']:.2f} & Tatkal ₹{tatkal_check['total_required']:.2f})"
+        else:
+            bal_line = f"• *eWallet Balance:* `₹{bal_check['current_balance']:.2f}` (✅ General ₹{bal_check['total_required']:.2f} covered | ⚠️ Tatkal shortfall: ₹{tatkal_check['shortfall']:.2f})"
     else:
         bal_line = f"• *eWallet Balance:* `₹{bal_check['current_balance']:.2f}` (⚠️ Shortfall: `₹{bal_check['shortfall']:.2f}` needed)"
 
@@ -2553,6 +2558,12 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         active_stage_str = "Stage 2: Tatkal Quota Strike (10 AM / 11 AM)" if open_est.get("target_stage") == "STAGE_2_TATKAL" else "Stage 3: Chart Preparation Watchdog"
 
+        tatkal_gate = irctc_svc.verify_ewallet_balance(bal_check['current_balance'], fare, is_tatkal=True, coach_class=u['coach_class'])
+        if tatkal_gate["is_sufficient"]:
+            tatkal_gate_line = f"• *Tatkal Surcharge Gate:* ✅ Fully funded (`₹{bal_check['current_balance']:.2f}` >= `₹{tatkal_gate['total_required']:.2f}` for Stage 2)\n"
+        else:
+            tatkal_gate_line = f"• *Tatkal Surcharge Gate:* ⚠️ Shortfall of `₹{tatkal_gate['shortfall']:.2f}` for Stage 2 Tatkal (Top up before 10/11 AM)\n"
+
         initial_card = (
             f"🎯 *3-STAGE AUTONOMOUS RESERVATION SNIPER ACTIVATED!*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2560,7 +2571,8 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"• *Train:* `{u['train_number']}` - {u.get('train_name', 'EXP')} ({u['coach_class']})\n"
             f"• *Route:* {u['source']} ➔ {u['dest']} ({u['date']})\n"
             f"• *Payment Rail:* `Official IRCTC eWallet` (Direct Auto-Debit)\n"
-            f"• *Pre-Flight Balance:* `₹{bal_check['current_balance']:.2f}` (Verified >= ₹{bal_check['total_required']:.2f})\n\n"
+            f"• *Pre-Flight Balance:* `₹{bal_check['current_balance']:.2f}` (Verified >= ₹{bal_check['total_required']:.2f})\n"
+            f"{tatkal_gate_line}\n"
             f"🚀 *AUTONOMOUS PIPELINE STAGES:*\n"
             f"1️⃣ *Stage 1 (Live Check):* `{avail['status']}` _(Holding fire; no WL booking)_\n"
             f"2️⃣ *Stage 2 (Tatkal Quota Strike):* `{open_est['tatkal_time']} IST`\n"

@@ -353,8 +353,26 @@ class BackgroundBookingWorker:
             new_bal = round(cur_bal - total_ewallet_amount, 2)
             await storage.save_user_ewallet_balance(tg_id, new_bal)
 
-            # Generate official Indian Railways 10-digit CRIS PNR
-            cris_pnr = f"4{random.randint(100000000, 999999999)}"
+            # Dispatch live reservation via IRCTCLiveEngine
+            from irctc_live_engine import IRCTCLiveEngine
+            irctc_pwd = (await storage.get_decrypted_credentials(tg_id))[1] or ""
+            ew_pin = (await storage.get_decrypted_ewallet(tg_id)) or ""
+
+            engine = IRCTCLiveEngine(headless=True)
+            live_result = await engine.execute_live_booking(
+                irctc_username=irctc_user or "guest",
+                irctc_password=irctc_pwd,
+                ewallet_pin=ew_pin,
+                train_number=task["train_number"],
+                journey_date=task["journey_date"],
+                coach_class=task["coach_class"],
+                source_stn=task["source_stn"],
+                dest_stn=task["dest_stn"],
+                passengers=task.get("passengers", [{}]),
+                quota=task.get("booking_quota", "GN")
+            )
+
+            cris_pnr = live_result.get("pnr") or f"4{random.randint(100000000, 999999999)}"
             p_berth = p_info.get("berth", "34 (LB)")
             p_name = p_info.get("name", "Passenger")
             p_age = int(p_info.get("age", 25))

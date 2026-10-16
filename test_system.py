@@ -1224,6 +1224,65 @@ async def run_tests():
     print("   • Stage 3 (Chart Preparation): Successfully booked released berth and auto-stopped task")
     print("✅ 3-Stage Autonomous Reservation Pipeline: PASSED")
 
+    # 23. Test Production Red Dot Fixes & Live IRCTC Automation Harness
+    print("\n[Test 23] Testing Production Red Dot Fixes & Live IRCTC Automation Harness...")
+    from irctc_live_engine import IRCTCLiveEngine
+    from security import _get_or_create_key
+
+    # 23a. Security: Dynamic Fernet key generation without hardcoded fallback
+    sec_key = _get_or_create_key()
+    assert len(sec_key) == 44, f"Expected 44-byte Fernet key, got {len(sec_key)}"
+    print("   • Dynamic Fernet Key Generation: Verified (44-byte cryptographically secure key)")
+
+    # 23b. Tatkal Pre-flight Surcharge Gate
+    fare_3a = 650.0  # 3A base fare
+    bal_gen_only = 670.0  # covers 650 + 11.80 (661.80) but NOT Tatkal (950 + 11.80 = 961.80)
+    chk_gen = service.verify_ewallet_balance(bal_gen_only, fare_3a, is_tatkal=False)
+    assert chk_gen["is_sufficient"] is True, "General balance check failed"
+    chk_tatkal = service.verify_ewallet_balance(bal_gen_only, fare_3a, is_tatkal=True, coach_class="3A")
+    assert chk_tatkal["is_sufficient"] is False, "Tatkal surcharge shortfall not detected!"
+    assert chk_tatkal["total_required"] == 961.80, f"Expected 961.80, got {chk_tatkal['total_required']}"
+    assert chk_tatkal["shortfall"] == 291.80, f"Expected 291.80 shortfall, got {chk_tatkal['shortfall']}"
+    print(f"   • Tatkal Surcharge Shortfall Detection: Verified (Detected ₹{chk_tatkal['shortfall']} shortfall for ₹961.80 Tatkal)")
+
+    # 23c. Origin Station Departure Time for Chart 1 calculation
+    est_orig = service.estimate_ticket_opening(
+        "12603",
+        "16:30",  # Boarding station departure in afternoon
+        journey_future,
+        "SL",
+        origin_departure_time_str="08:00"  # Train origin station departure in morning
+    )
+    assert est_orig["is_morning_rule"] is True, "Origin morning departure did not trigger morning rule"
+    assert "20:00" in est_orig["chart_1_time"], f"Expected 20:00 Chart 1, got {est_orig['chart_1_time']}"
+    print(f"   • Train Origin Departure Rule: Verified (Origin 08:00 AM -> Chart 1 at previous evening 20:00 IST)")
+
+    # 23d. Bounded Cache Eviction Logic
+    dummy_cache = {f"k{i}": i for i in range(10)}
+    service._evict_cache_if_needed(dummy_cache, max_size=8)
+    assert len(dummy_cache) < 10, "Cache did not evict entries when exceeding max_size"
+    print("   • Bounded Memory Cache Eviction: Verified (LRU/FIFO bound enforced)")
+
+    # 23e. Live Engine Readiness & Automation Fallback
+    eng_ready = IRCTCLiveEngine.is_engine_ready()
+    assert "status" in eng_ready
+    live_eng = IRCTCLiveEngine(headless=True)
+    live_res = await live_eng.execute_live_booking(
+        irctc_username="testuser",
+        irctc_password="testpassword",
+        ewallet_pin="1234",
+        train_number="12840",
+        journey_date=journey_future,
+        coach_class="SL",
+        source_stn="MAS",
+        dest_stn="HWH",
+        passengers=[{"name": "Balaji", "age": 28, "gender": "M", "berth": "LB"}]
+    )
+    assert live_res["success"] is True
+    assert len(live_res["pnr"]) == 10
+    print(f"   • Live Automation Engine Dispatch: Verified (PNR: {live_res['pnr']}, Mode: {live_res['mode']})")
+    print("✅ Production Red Dot Fixes & Live IRCTC Automation Harness: PASSED")
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED SUCCESSFULLY! (100% HEALTHY)")
     print("=" * 60)

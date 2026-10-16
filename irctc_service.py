@@ -50,11 +50,21 @@ def get_tatkal_fare(base_fare: float, coach_class: str) -> float:
 
 
 class IRCTCService:
+    MAX_CACHE_SIZE = 500
+
     def __init__(self):
-        # Simulated dynamic inventory per train & class
+        # Bounded dynamic inventory per train & class
         self.inventory: Dict[str, Dict[str, Dict[str, Any]]] = {}
         # Cache for real train metadata (classes, names, etc.)
         self.train_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _evict_cache_if_needed(self, cache_dict: dict, max_size: int = 500):
+        """Enforces bounded LRU/FIFO memory limit to prevent memory leak under high query traffic."""
+        if len(cache_dict) > max_size:
+            drop_count = max(1, len(cache_dict) // 5)
+            keys_to_drop = list(cache_dict.keys())[:drop_count]
+            for k in keys_to_drop:
+                cache_dict.pop(k, None)
 
     def _get_key(self, train_no: str, journey_date: str, quota: str = "GN") -> str:
         q = (quota or "GN").upper()
@@ -224,10 +234,12 @@ class IRCTCService:
 
                     to_stn = str(t.get("toStnCode") or dst).strip().upper()
                     from_stn = str(t.get("fromStnCode") or src).strip().upper()
+                    orig_dep = str(t.get("sourceDepartureTime") or t.get("originDepartureTime") or dep).strip()
                     t_dict = {
                         "number": num,
                         "name": name,
                         "departure": dep,
+                        "origin_departure": orig_dep,
                         "arrival": arr,
                         "duration": dur_str,
                         "from_station": from_stn,
@@ -237,7 +249,9 @@ class IRCTCService:
                         "quotas": {}
                     }
                     trains.append(t_dict)
+                    self._evict_cache_if_needed(self.train_cache)
                     self.train_cache[num] = t_dict
+                    self._evict_cache_if_needed(self.inventory)
 
                 trains.sort(key=lambda x: datetime.datetime.strptime(x["departure"], "%H:%M").time())
                 return trains
@@ -324,6 +338,7 @@ class IRCTCService:
                         "number": num,
                         "name": name,
                         "departure": dep,
+                        "origin_departure": dep,
                         "arrival": arr,
                         "duration": dur_raw,
                         "from_station": from_stn,
@@ -333,6 +348,7 @@ class IRCTCService:
                         "quotas": class_quotas
                     }
                     trains.append(t_dict)
+                    self._evict_cache_if_needed(self.train_cache)
                     self.train_cache[num] = t_dict
 
                 trains.sort(key=lambda x: datetime.datetime.strptime(x["departure"], "%H:%M").time())
@@ -467,14 +483,15 @@ class IRCTCService:
         train_no: str,
         departure_time_str: str,
         journey_date_str: str,
-        coach_class: str
+        coach_class: str,
+        origin_departure_time_str: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Estimates the exact ticket release and chart preparation windows:
         1. First Chart Preparation (Chart 1):
            - Officially finalized ~4 hours before train departure from origin station.
-           - Morning trains (departing 00:01 - 14:00): chart is prepared the previous evening at 20:00 IST!
-           - Afternoon/Evening trains (departing >= 14:00): chart is prepared 4 hours before departure.
+           - Morning trains (origin departure 00:01 - 14:00): chart is prepared the previous evening at 20:00 IST!
+           - Afternoon/Evening trains (origin departure >= 14:00): chart is prepared 4 hours before origin departure.
         2. Second Chart Preparation (Chart 2 / Current Booking):
            - Finalized 30 minutes before train departure. Unsold/vacant berths become CURR_AVBL.
         3. Tatkal Opening:
@@ -493,15 +510,32 @@ class IRCTCService:
 
         train_dep_dt = datetime.datetime.combine(j_date, dep_time, tzinfo=IST)
 
-        # 1. Chart 1 Preparation Calculation
-        if dep_time.hour < 14:
+        # Lookup origin station departure time:
+        # Indian Railways calculates Chart 1 based on origin station departure time!
+        train_info = self.train_cache.get(train_no, {})
+        orig_dep_str = origin_departure_time_str or train_info.get("origin_departure") or departure_time_str
+        try:
+            orig_dep_time = datetime.datetime.strptime(orig_dep_str, "%H:%M").time()
+        except Exception:
+            orig_dep_time = dep_time
+
+        # 1. Chart 1 Preparation Calculation (based on train origin departure)
+        is_morning = orig_dep_time.hour < 14
+        if is_morning:
             # Morning train rule: prepared previous night at 20:00 IST
             prev_day = j_date - datetime.timedelta(days=1)
             chart_1_dt = datetime.datetime.combine(prev_day, datetime.time(hour=20, minute=0), tzinfo=IST)
-            chart_rule_note = "Previous Evening 20:00 IST Rule (Morning Train)"
+            if orig_dep_str != departure_time_str:
+                chart_rule_note = f"Previous Evening 20:00 IST Rule (Origin Dep: {orig_dep_str})"
+            else:
+                chart_rule_note = "Previous Evening 20:00 IST Rule (Morning Train)"
         else:
-            chart_1_dt = train_dep_dt - datetime.timedelta(hours=4)
-            chart_rule_note = "4 Hours Prior to Train Departure"
+            orig_dep_dt = datetime.datetime.combine(j_date, orig_dep_time, tzinfo=IST)
+            chart_1_dt = orig_dep_dt - datetime.timedelta(hours=4)
+            if orig_dep_str != departure_time_str:
+                chart_rule_note = f"4 Hours Prior to Origin Departure ({orig_dep_str})"
+            else:
+                chart_rule_note = "4 Hours Prior to Train Departure"
 
         # 2. Chart 2 Preparation (30 mins before train departure)
         chart_2_dt = train_dep_dt - datetime.timedelta(minutes=30)
@@ -548,6 +582,7 @@ class IRCTCService:
 
         return {
             "train_departure": train_dep_dt.strftime("%Y-%m-%d %H:%M"),
+            "origin_departure": orig_dep_str,
             "chart_1_time": chart_1_dt.strftime("%Y-%m-%d %H:%M"),
             "chart_1_timestamp": chart_1_dt.timestamp(),
             "chart_2_time": chart_2_dt.strftime("%Y-%m-%d %H:%M"),
@@ -566,7 +601,7 @@ class IRCTCService:
             "watchdog_start_timestamp": watchdog_start_dt.timestamp(),
             "seconds_until_watchdog_start": sec_until_watchdog_start,
             "is_watchdog_active": is_watchdog_active,
-            "is_morning_rule": dep_time.hour < 14
+            "is_morning_rule": is_morning
         }
 
     async def check_availability(
@@ -686,22 +721,31 @@ class IRCTCService:
         return False, ""
 
     @staticmethod
-    def verify_ewallet_balance(balance: float, fare: float) -> Dict[str, Any]:
+    def verify_ewallet_balance(
+        balance: float,
+        fare: float,
+        is_tatkal: bool = False,
+        coach_class: str = ""
+    ) -> Dict[str, Any]:
         """
         Calculates official IRCTC eWallet required amount and validates balance sufficiency.
         Enforces IRCTC eWallet Official Rules:
         - Transaction fee: Rs. 10.00 + 18% GST (Rs. 11.80 per booking)
+        - If is_tatkal is True, calculates against Tatkal fare with surcharge.
         - Required Total = Ticket Fare + Rs. 11.80
         """
+        effective_fare = get_tatkal_fare(fare, coach_class) if (is_tatkal and coach_class) else float(fare)
         fee = 11.80
-        total_required = round(float(fare) + fee, 2)
+        total_required = round(float(effective_fare) + fee, 2)
         cur_bal = round(float(balance), 2)
         is_sufficient = cur_bal >= total_required
         shortfall = round(total_required - cur_bal, 2) if not is_sufficient else 0.0
 
         return {
             "is_sufficient": is_sufficient,
-            "fare": round(float(fare), 2),
+            "fare": round(float(effective_fare), 2),
+            "base_fare": round(float(fare), 2),
+            "is_tatkal": is_tatkal,
             "fee": fee,
             "total_required": total_required,
             "current_balance": cur_bal,

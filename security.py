@@ -3,12 +3,10 @@ import os
 from pathlib import Path
 from cryptography.fernet import Fernet
 from config import BASE_DIR, ENCRYPTION_KEY
-
 KEY_FILE = BASE_DIR / "secret.key"
-STATIC_FALLBACK_KEY = b"fZsSSdRLyvAk9L6NvYyed2M-dLvMoGkqxIv5qPVBYdc="
 
 def _get_or_create_key() -> bytes:
-    """Retrieve existing Fernet key or generate and persist a new one."""
+    """Retrieve existing Fernet key or generate and persist a new one dynamically."""
     if ENCRYPTION_KEY:
         return ENCRYPTION_KEY.encode()
     if KEY_FILE.exists():
@@ -18,11 +16,13 @@ def _get_or_create_key() -> bytes:
                 return k
         except Exception:
             pass
+    # Dynamically generate cryptographically strong Fernet key
+    new_key = Fernet.generate_key()
     try:
-        KEY_FILE.write_text(STATIC_FALLBACK_KEY.decode())
+        KEY_FILE.write_text(new_key.decode())
     except Exception:
         pass
-    return STATIC_FALLBACK_KEY
+    return new_key
 
 _cipher = Fernet(_get_or_create_key())
 
