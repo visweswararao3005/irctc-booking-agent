@@ -712,9 +712,14 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """View or update stored IRCTC eWallet configuration and balance for this specific chat."""
     tg_id = update.effective_user.id
 
-    # Support /wallet balance 1500 or /wallet 1500
+    # Support /wallet check or /wallet live or /wallet refresh
     if context and context.args:
-        raw_arg = " ".join(context.args).lower().replace("balance", "").replace("₹", "").replace(",", "").strip()
+        raw_joined = " ".join(context.args).lower().strip()
+        if any(w in raw_joined for w in ["check", "live", "refresh", "fetch", "scrape"]):
+            return await fetch_and_report_live_wallet(update, context)
+
+        # Support /wallet balance 1500 or /wallet 1500
+        raw_arg = raw_joined.replace("balance", "").replace("₹", "").replace(",", "").strip()
         try:
             val = float(raw_arg)
             if val >= 0:
@@ -736,6 +741,11 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur_bal = await storage.get_user_ewallet_balance(tg_id)
     masked_pin = ("•" * len(pin)) if pin else "⚠️ Not Set (Use /change_wallet)"
 
+    wallet_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Fetch Live IRCTC Balance Now", callback_data="btn_fetch_live_wallet")],
+        [InlineKeyboardButton("🔗 Open Official IRCTC Deposit", url="https://www.irctc.co.in/nget/deposit-ewallet")]
+    ])
+
     await update.message.reply_text(
         f"💼 *Your Linked IRCTC eWallet:*\n\n"
         f"• *IRCTC Account:* `{user_str}`\n"
@@ -744,12 +754,65 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• *Auto-Debit Status:* {'✅ Ready for 0s Instant Booking' if pin and cur_bal > 0 else '⚠️ Needs PIN or Balance Top-Up'}\n"
         f"• *Official Fee:* ₹10.00 + 18% GST (₹11.80 per booking)\n\n"
         "🔗 *Official Deposit Portal:* [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n\n"
-        "🛠️ *Quick Commands:*\n"
-        "• `/wallet balance <amount>` — Update your eWallet balance (e.g. `/wallet balance 1500`)\n"
+        "🛠️ *Quick Commands & Actions:*\n"
+        "• Tap *'🔄 Fetch Live IRCTC Balance Now'* below to scrape your real deposit\n"
+        "• `/check_balance` — Instantly logs into IRCTC and syncs live balance\n"
+        "• `/wallet balance <amount>` — Manually update balance (e.g. `/wallet balance 1500`)\n"
         "• `/change_wallet` — Set or update your 4-6 digit Transaction PIN\n"
         "• `/reset_wallet` — Remove your eWallet PIN from storage",
+        reply_markup=wallet_kb,
         parse_mode="Markdown"
     )
+
+async def fetch_and_report_live_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Logs into IRCTC NGET via headless session and fetches real-time e-Wallet deposit balance."""
+    query = update.callback_query
+    msg = query.message if query else update.effective_message
+    tg_id = update.effective_user.id
+
+    if query:
+        await query.answer("Connecting to IRCTC NGET to check your live balance...")
+
+    status_msg = await msg.reply_text(
+        "🔍 *Logging into official IRCTC NGET to scrape your real-time e-Wallet balance...*\n_Please hold on a few seconds..._",
+        parse_mode="Markdown"
+    )
+
+    username, password = await storage.get_decrypted_credentials(tg_id)
+    if not username or not password:
+        await status_msg.edit_text(
+            "⚠️ *No IRCTC Credentials Linked!*\n\n"
+            "Please link your IRCTC account first using `/account` or `/change_account` so the agent can log into IRCTC NGET.",
+            parse_mode="Markdown"
+        )
+        return
+
+    from irctc_live_engine import IRCTCLiveEngine
+    engine = IRCTCLiveEngine(headless=True)
+    live_res = await engine.get_live_ewallet_balance(username, password)
+    if live_res.get("success"):
+        fetched_bal = live_res["balance"]
+        await storage.save_user_ewallet_balance(tg_id, fetched_bal)
+        pin = await storage.get_decrypted_ewallet(tg_id)
+        auto_ready = "✅ Ready for 0s Instant Booking" if pin and fetched_bal > 0 else "⚠️ Balance updated, but PIN not set (Use /change_wallet)"
+        await status_msg.edit_text(
+            f"✅ *Live IRCTC e-Wallet Deposit Scraped Successfully!*\n\n"
+            f"• *IRCTC Account:* `{username}`\n"
+            f"• *Current Live Balance:* `₹{fetched_bal:.2f}`\n"
+            f"• *Auto-Debit Status:* {auto_ready}\n"
+            f"• *Verified Source:* Official IRCTC NGET Portal\n\n"
+            "Funds are synced and ready for instant 0-second reservation strikes!",
+            parse_mode="Markdown"
+        )
+    else:
+        err = live_res.get("error", "Unable to scrape balance.")
+        cur_bal = await storage.get_user_ewallet_balance(tg_id)
+        await status_msg.edit_text(
+            f"⚠️ *Could not fetch live balance from IRCTC portal:*\n`{err}`\n\n"
+            f"• *Last Recorded Balance:* `₹{cur_bal:.2f}`\n"
+            "You can still update it manually via `/wallet balance <amount>` (e.g. `/wallet balance 1500`).",
+            parse_mode="Markdown"
+        )
 
 async def cmd_reset_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Wipes stored IRCTC eWallet PIN for this chat."""
@@ -2930,6 +2993,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
         return await cmd_wallet(update, context)
+
+    elif data == "btn_fetch_live_wallet":
+        return await fetch_and_report_live_wallet(update, context)
 
     else:
         try:
