@@ -16,9 +16,18 @@ if ($existing) {
 }
 
 # Start single instance using pythonw.exe (windowless, silent)
+# Resolve repository root dynamically
+$workDir = (Resolve-Path "$PSScriptRoot\..").Path
+$mainPy = Join-Path $workDir "main.py"
+
+# Detect Python interpreter
 $pythonExe = "C:\Users\Balaji P\AppData\Local\Programs\Python\Python313\pythonw.exe"
-$mainPy = "C:\Users\Balaji P\Desktop\project\Train\main.py"
-$workDir = "C:\Users\Balaji P\Desktop\project\Train"
+if (-not (Test-Path $pythonExe)) {
+    $pythonExe = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
+    if (-not $pythonExe) {
+        $pythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
+    }
+}
 
 $cmdLine = "`"$pythonExe`" `"$mainPy`""
 $res = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{

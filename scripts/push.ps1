@@ -5,6 +5,10 @@ Write-Host "==========================================================" -Foregro
 Write-Host "       IRCTC AI Booking Agent - Push to GitHub            " -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
+# Ensure we operate in repository root
+$repoRoot = (Resolve-Path "$PSScriptRoot\..").Path
+Set-Location $repoRoot
+
 $remoteUrl = git remote get-url origin
 Write-Host "Current Remote URL: " -NoNewline; Write-Host $remoteUrl -ForegroundColor Yellow
 Write-Host ""

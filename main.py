@@ -8,6 +8,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
+# Ensure 'src' directory is in Python module search path
+SRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
 import httpx
 from telegram import Update
 from telegram.ext import (

@@ -81,19 +81,48 @@ python main.py
 
 ---
 
-## 📁 Project Architecture
+## 📁 Project Architecture & Clean Folder Layout
 
 ```
 Train/
-├── .env                  # Secrets, bot token, and credit card info
-├── .env.example          # Sample environment template
-├── config.py             # Configuration and directory setup
-├── security.py           # AES-256 encryption & masking
-├── storage.py            # Thread-safe JSON storage & task lifecycle
-├── irctc_service.py      # Train lookup, pricing, and Card+OTP engine
-├── ticket_generator.py   # fpdf2 electronic ticket PDF generator
-├── scheduler.py          # Background poller, live feedback, and Try Now handler
-├── bot.py                # Telegram FSM ConversationHandler
-├── test_system.py        # Automated verification test suite
-└── main.py               # Unified application runner
+├── docs/                             # System Documentation & Runbooks
+│   ├── ARCHITECTURE.md               # End-to-end Architectural Specification
+│   └── DEPLOYMENT.md                 # Cloud & VPS Deployment Manual
+│
+├── scripts/                          # Administration & Process Management
+│   ├── start.ps1 / start_bot.bat     # Silent Background Process Launcher
+│   ├── stop.ps1 / stop_bot.bat       # Process Stopper & Clean Shutdown
+│   ├── info.ps1 / info_bot.bat       # Live PID & Resource Monitoring
+│   └── push.ps1 / push_to_git.bat    # Automated Git Synchronization
+│
+├── src/                              # Core Application Logic
+│   ├── __init__.py                   # Package Root
+│   ├── bot.py                        # Telegram UI, State Machine & Menus
+│   ├── config.py                     # Environment Configuration & Path Resolver
+│   ├── irctc_live_engine.py          # Playwright Headless Scraping & Automation
+│   ├── irctc_service.py              # PRS Business Logic, Tatkal & Charting Rules
+│   ├── live_payment_service.py       # UPI Intent, QR Codes & Card Gateway
+│   ├── scheduler.py                  # Background Watchdog & Task Scheduler
+│   ├── security.py                   # AES-256 (Fernet) Encryption Layer
+│   ├── storage.py                    # Multi-Tenant Persistence (Redis / JSON)
+│   ├── ticket_generator.py           # Electronic Reservation Slip (ERS) PDF Engine
+│   └── timezone_utils.py             # Indian Standard Time (IST / Asia/Kolkata)
+│
+├── tests/                            # Automated Verification Suites
+│   ├── __init__.py
+│   └── test_system.py                # 23 E2E Integration Tests (100% Pass)
+│
+├── .env                              # Active Environment Secrets (Git Ignored)
+├── .env.example                      # Environment Configuration Template
+├── .gitignore                        # Git Ignore Rules
+├── Dockerfile                        # Container Specification
+├── main.py                           # Application Server & Health Probe Entrypoint
+├── Procfile                          # Cloud Process Manifest (Koyeb / Render)
+├── README.md                         # Quickstart Guide
+├── requirements.txt                  # Python Production Dependencies
+├── secret.key                        # Master Fernet Encryption Key
+├── start_bot.bat                     # Windows Root Launcher Shortcut
+├── stop_bot.bat                      # Windows Root Stopper Shortcut
+├── push_to_git.bat                   # Windows Root Git Sync Shortcut
+└── test_system.py                    # Root Test Runner Shim
 ```
