@@ -749,15 +749,14 @@ async def run_tests():
     assert last_b["train_number"] == "12712"
     assert "4" == last_b["pnr"][0] and len(last_b["pnr"]) == 10, f"Invalid PNR format: {last_b['pnr']}"
 
-    # d. Confirmation message and PDF document were sent to user
+    # d. Confirmation message sent to user with official CRIS PNR (Zero fake PDF)
     assert len(mock_app.bot.messages) >= 1, "No confirmation message sent"
     assert "CONFIRMED SEATS BOOKED DIRECTLY ON IRCTC" in mock_app.bot.messages[-1]["text"]
-    assert len(mock_app.bot.documents) >= 1, "No PDF ticket sent"
-    assert "IRCTC_Confirmed_" in mock_app.bot.documents[-1]["filename"]
+    assert "Official CRIS PNR:" in mock_app.bot.messages[-1]["text"]
 
     print(f"   • Auto-Debited Balance:    ₹{bal_after:.2f} ➔ ₹{bal_after_booking:.2f} (Total Paid: ₹{ticket_fare + 11.80:.2f})")
-    print(f"   • Generated CRIS PNR:      {last_b['pnr']} (Verified 10-Digit PRS)")
-    print(f"   • Electronic PDF Delivered: {mock_app.bot.documents[-1]['filename']}")
+    print(f"   • CRIS PNR Delivered:      {last_b['pnr']} (Verified 10-Digit PRS)")
+    print(f"   • Zero Fake PDF Policy:    Pure text confirmation with live IndianRail verification link")
     print(f"   • Zero User Action Needed: 100% Direct Autonomous Auto-Booking Confirmed")
     print("✅ Exclusive IRCTC eWallet Rail & Direct Auto-Booking: PASSED")
 

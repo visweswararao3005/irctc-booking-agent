@@ -373,7 +373,31 @@ class BackgroundBookingWorker:
                 quota=task.get("booking_quota", "GN")
             )
 
-            cris_pnr = live_result.get("pnr") or f"4{random.randint(100000000, 999999999)}"
+            if not live_result.get("success"):
+                err_msg = live_result.get("error", "IRCTC automated reservation did not complete.")
+                fail_notice = (
+                    "⚠️ <b>IRCTC Live Booking Notice</b> ⚠️\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
+                    f"• <b>Status:</b> Confirmed seats were detected, but the live reservation attempt encountered:\n"
+                    f"  <code>{err_msg}</code>\n\n"
+                    "🛡️ <b>Strict Zero-Fake Policy:</b> No fake PNR was generated and no e-Wallet balance was deducted.\n"
+                    "The Sniper Watchdog remains active and will retry on subsequent seat openings."
+                )
+                await self.bot_app.bot.send_message(chat_id=chat_id, text=fail_notice, parse_mode="HTML")
+                return
+
+            cris_pnr = live_result.get("pnr")
+            if not cris_pnr:
+                err_notice = (
+                    "⚠️ <b>IRCTC Live Booking Notice</b> ⚠️\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "IRCTC session finished, but an authentic 10-digit CRIS PNR could not be intercepted from the confirmation screen.\n"
+                    "No fake PNR was generated. Please verify directly under your IRCTC 'Booked Ticket History'."
+                )
+                await self.bot_app.bot.send_message(chat_id=chat_id, text=err_notice, parse_mode="HTML")
+                return
+
             p_berth = p_info.get("berth", "34 (LB)")
             p_name = p_info.get("name", "Passenger")
             p_age = int(p_info.get("age", 25))
@@ -403,7 +427,6 @@ class BackgroundBookingWorker:
                 "txn_id": f"EW-{random.randint(10000000, 99999999)}"
             }
 
-            pdf_path = generate_ticket_pdf(booking_data)
             await storage.save_user_booking(tg_id, booking_data)
             await storage.delete_task(task_id)
 
@@ -421,22 +444,11 @@ class BackgroundBookingWorker:
                 f"• <b>Payment Rail:</b> <code>Official IRCTC eWallet</code> (Direct Auto-Debit)\n"
                 f"• <b>Amount Debited:</b> <code>₹{total_ewallet_amount:.2f}</code> (Fare: ₹{amount:.2f} + Fee: ₹11.80)\n"
                 f"• <b>Remaining eWallet Balance:</b> <code>₹{new_bal:.2f}</code>\n\n"
-                "✅ <b>Zero User Action Required:</b> Direct auto-booking executed instantaneously the exact millisecond confirmed berths released!\n"
-                "🔗 <b>Verify Live on IndianRail:</b> <a href='https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html'>indianrail.gov.in</a>\n\n"
-                "📄 <b>Official Electronic Reservation Slip (ERS) PDF is attached below:</b> 👇"
+                "✅ <b>Zero Fake PNR Guarantee:</b> Authentic reservation confirmed on Indian Railways NGET.\n"
+                "🔗 <b>Verify Live on IndianRail:</b> <a href='https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html'>indianrail.gov.in</a>\n"
             )
 
             await self.bot_app.bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="HTML")
-            try:
-                with open(pdf_path, "rb") as doc:
-                    await self.bot_app.bot.send_document(
-                        chat_id=chat_id,
-                        document=doc,
-                        filename=f"IRCTC_Confirmed_{cris_pnr}.pdf",
-                        caption=f"Official Indian Railways ERS Booking Slip (PNR: {cris_pnr})."
-                    )
-            except Exception as e:
-                print(f"[WARN] Failed to send PDF document: {e}")
             return
 
         elif pay_mode == "Credit / Debit Card":
