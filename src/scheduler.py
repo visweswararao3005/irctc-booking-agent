@@ -8,7 +8,6 @@ from telegram.error import TelegramError
 from config import POLL_INTERVAL_SECONDS
 import storage
 from security import mask_text
-from ticket_generator import generate_ticket_pdf
 from irctc_service import IRCTCService
 from timezone_utils import IST, now_ist, now_ist_naive, today_ist, time_ist, format_ist_time, format_ist_datetime
 

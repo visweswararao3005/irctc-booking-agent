@@ -756,7 +756,6 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔗 *Official Deposit Portal:* [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n\n"
         "🛠️ *Quick Commands & Actions:*\n"
         "• Tap *'🔄 Fetch Live IRCTC Balance Now'* below to scrape your real deposit\n"
-        "• `/check_balance` — Instantly logs into IRCTC and syncs live balance\n"
         "• `/wallet balance <amount>` — Manually update balance (e.g. `/wallet balance 1500`)\n"
         "• `/change_wallet` — Set or update your 4-6 digit Transaction PIN\n"
         "• `/reset_wallet` — Remove your eWallet PIN from storage",

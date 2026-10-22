@@ -4,7 +4,6 @@ import random
 import re
 import httpx
 from typing import List, Dict, Any, Optional, Tuple
-from ticket_generator import generate_ticket_pdf
 from config import CARD_NUMBER, CARD_EXPIRY, CARD_CVV, CARD_HOLDER, OTP_TIMEOUT_SECONDS
 from timezone_utils import IST, now_ist, now_ist_naive, today_ist, time_ist, format_ist_time, format_ist_datetime
 

@@ -171,8 +171,6 @@ async def run_bot():
             CommandHandler("wallet", bot.cmd_wallet),
             CommandHandler("ewallet", bot.cmd_wallet),
             CommandHandler("balance", bot.cmd_wallet),
-            CommandHandler("check_balance", bot.fetch_and_report_live_wallet),
-            CommandHandler("live_balance", bot.fetch_and_report_live_wallet),
             CommandHandler("remove_passenger", bot.start_remove_passenger),
             CommandHandler("delete_passenger", bot.start_remove_passenger),
             CommandHandler("reset_profile", bot.cmd_reset_profile),
@@ -220,8 +218,6 @@ async def run_bot():
     app.add_handler(CommandHandler("wallet", bot.cmd_wallet))
     app.add_handler(CommandHandler("ewallet", bot.cmd_wallet))
     app.add_handler(CommandHandler("balance", bot.cmd_wallet))
-    app.add_handler(CommandHandler("check_balance", bot.fetch_and_report_live_wallet))
-    app.add_handler(CommandHandler("live_balance", bot.fetch_and_report_live_wallet))
     app.add_handler(CommandHandler("reset_wallet", bot.cmd_reset_wallet))
     app.add_handler(CommandHandler("verify", bot.cmd_verify_pnr))
     app.add_handler(CallbackQueryHandler(bot.handle_callback_query))
