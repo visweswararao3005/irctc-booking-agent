@@ -320,199 +320,132 @@ class BackgroundBookingWorker:
         ]
         keyboard = InlineKeyboardMarkup(buttons)
 
-        if pay_mode == "IRCTC eWallet":
-            cur_bal = await storage.get_user_ewallet_balance(tg_id)
-            bal_check = IRCTCService.verify_ewallet_balance(cur_bal, amount)
-            total_ewallet_amount = bal_check["total_required"]
+        # Direct IRCTC e-Wallet Auto-Debit Rail
+        cur_bal = await storage.get_user_ewallet_balance(tg_id)
+        bal_check = IRCTCService.verify_ewallet_balance(cur_bal, amount)
+        total_ewallet_amount = bal_check["total_required"]
 
-            if not bal_check["is_sufficient"]:
-                # Shortfall: notify user with deposit link
-                task["latest_status"] = "AWAITING_EWALLET_RECHARGE"
-                task["payable_fare"] = amount
-                await storage.save_task(task)
+        if not bal_check["is_sufficient"]:
+            # Shortfall: notify user with deposit link
+            task["latest_status"] = "AWAITING_EWALLET_RECHARGE"
+            task["payable_fare"] = amount
+            await storage.save_task(task)
 
-                prompt_text = (
-                    "🚨 <b>CONFIRMED SEATS OPEN — BUT INSUFFICIENT EWALLET BALANCE!</b> 🚨\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
-                    f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
-                    f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
-                    f"• <b>Current Balance:</b> <code>₹{cur_bal:.2f}</code> | <b>Required:</b> <code>₹{total_ewallet_amount:.2f}</code>\n"
-                    f"• ⚠️ <b>Shortfall Needed:</b> <code>₹{bal_check['shortfall']:.2f}</code>\n\n"
-                    "👉 Please top up your IRCTC e-Wallet immediately on <a href='https://www.irctc.co.in/nget/deposit-ewallet'>irctc.co.in/deposit-ewallet</a> to secure your seat!"
-                )
-                buttons = [
-                    [InlineKeyboardButton("🔗 Top Up on Official IRCTC", url="https://www.irctc.co.in/nget/deposit-ewallet")],
-                    [InlineKeyboardButton("🔄 Re-try Auto-Booking Now", callback_data=f"try_{task_id}")],
-                    [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
-                ]
-                await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
-                return
-
-            # Balance is verified & sufficient -> Direct 0-second auto-booking execution!
-            new_bal = round(cur_bal - total_ewallet_amount, 2)
-            await storage.save_user_ewallet_balance(tg_id, new_bal)
-
-            # Dispatch live reservation via IRCTCLiveEngine
-            from irctc_live_engine import IRCTCLiveEngine
-            irctc_pwd = (await storage.get_decrypted_credentials(tg_id))[1] or ""
-            ew_pin = (await storage.get_decrypted_ewallet(tg_id)) or ""
-
-            engine = IRCTCLiveEngine(headless=True)
-            live_result = await engine.execute_live_booking(
-                irctc_username=irctc_user or "guest",
-                irctc_password=irctc_pwd,
-                ewallet_pin=ew_pin,
-                train_number=task["train_number"],
-                journey_date=task["journey_date"],
-                coach_class=task["coach_class"],
-                source_stn=task["source_stn"],
-                dest_stn=task["dest_stn"],
-                passengers=task.get("passengers", [{}]),
-                quota=task.get("booking_quota", "GN")
-            )
-
-            if not live_result.get("success"):
-                err_msg = live_result.get("error", "IRCTC automated reservation did not complete.")
-                fail_notice = (
-                    "⚠️ <b>IRCTC Live Booking Notice</b> ⚠️\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
-                    f"• <b>Status:</b> Confirmed seats were detected, but the live reservation attempt encountered:\n"
-                    f"  <code>{err_msg}</code>\n\n"
-                    "🛡️ <b>Strict Zero-Fake Policy:</b> No fake PNR was generated and no e-Wallet balance was deducted.\n"
-                    "The Sniper Watchdog remains active and will retry on subsequent seat openings."
-                )
-                await self.bot_app.bot.send_message(chat_id=chat_id, text=fail_notice, parse_mode="HTML")
-                return
-
-            cris_pnr = live_result.get("pnr")
-            if not cris_pnr:
-                err_notice = (
-                    "⚠️ <b>IRCTC Live Booking Notice</b> ⚠️\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    "IRCTC session finished, but an authentic 10-digit CRIS PNR could not be intercepted from the confirmation screen.\n"
-                    "No fake PNR was generated. Please verify directly under your IRCTC 'Booked Ticket History'."
-                )
-                await self.bot_app.bot.send_message(chat_id=chat_id, text=err_notice, parse_mode="HTML")
-                return
-
-            p_berth = p_info.get("berth", "34 (LB)")
-            p_name = p_info.get("name", "Passenger")
-            p_age = int(p_info.get("age", 25))
-            p_gender = p_info.get("gender", "M")
-
-            booked_quota = task.get("booking_quota", "GN")
-            quota_label = "Tatkal (TQ)" if booked_quota == "TQ" else "General (GN) / Charting Release"
-
-            booking_data = {
-                "pnr": cris_pnr,
-                "train_number": task["train_number"],
-                "train_name": task.get("train_name", "SUPERFAST EXP"),
-                "source": task["source_stn"],
-                "dest": task["dest_stn"],
-                "journey_date": task["journey_date"],
-                "coach_class": task["coach_class"],
-                "quota": booked_quota,
-                "fare": float(amount),
-                "passengers": [{
-                    "name": p_name,
-                    "age": p_age,
-                    "gender": p_gender,
-                    "berth": p_berth,
-                    "status": "CNF"
-                }],
-                "payment_method": f"Official IRCTC eWallet (Auto-Debited Rs. {total_ewallet_amount:.2f})",
-                "txn_id": f"EW-{random.randint(10000000, 99999999)}"
-            }
-
-            await storage.save_user_booking(tg_id, booking_data)
-            await storage.delete_task(task_id)
-
-            success_msg = (
-                "⚡⚡🎯 <b>CONFIRMED SEATS BOOKED DIRECTLY ON IRCTC!</b> 🎯⚡⚡\n"
+            prompt_text = (
+                "🚨 <b>CONFIRMED SEATS OPEN — BUT INSUFFICIENT EWALLET BALANCE!</b> 🚨\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"• <b>Official CRIS PNR:</b> <code>{cris_pnr}</code>\n"
-                f"• <b>Train:</b> {task['train_number']} ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
+                f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
                 f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
-                f"• <b>Quota:</b> <code>{quota_label}</code>\n"
-                f"• <b>Passenger:</b> {p_name} ({p_age} yrs, {p_gender})\n"
-                f"• <b>Coach / Berth:</b> S4 / {p_berth}\n"
-                f"• <b>Status:</b> <b>CONFIRMED RESERVATION (CNF)</b>\n"
                 f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
-                f"• <b>Payment Rail:</b> <code>Official IRCTC eWallet</code> (Direct Auto-Debit)\n"
-                f"• <b>Amount Debited:</b> <code>₹{total_ewallet_amount:.2f}</code> (Fare: ₹{amount:.2f} + Fee: ₹11.80)\n"
-                f"• <b>Remaining eWallet Balance:</b> <code>₹{new_bal:.2f}</code>\n\n"
-                "✅ <b>Zero Fake PNR Guarantee:</b> Authentic reservation confirmed on Indian Railways NGET.\n"
-                "🔗 <b>Verify Live on IndianRail:</b> <a href='https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html'>indianrail.gov.in</a>\n"
+                f"• <b>Current Balance:</b> <code>₹{cur_bal:.2f}</code> | <b>Required:</b> <code>₹{total_ewallet_amount:.2f}</code>\n"
+                f"• ⚠️ <b>Shortfall Needed:</b> <code>₹{bal_check['shortfall']:.2f}</code>\n\n"
+                "👉 Please top up your IRCTC e-Wallet immediately on <a href='https://www.irctc.co.in/nget/deposit-ewallet'>irctc.co.in/deposit-ewallet</a> to secure your seat!"
             )
-
-            await self.bot_app.bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="HTML")
+            buttons = [
+                [InlineKeyboardButton("🔗 Top Up on Official IRCTC", url="https://www.irctc.co.in/nget/deposit-ewallet")],
+                [InlineKeyboardButton("🔄 Re-try Auto-Booking Now", callback_data=f"try_{task_id}")],
+                [InlineKeyboardButton("❌ Cancel Booking", callback_data=f"cancel_{task_id}")]
+            ]
+            await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
             return
 
-        elif pay_mode == "Credit / Debit Card":
-            card_data = await storage.get_decrypted_card(tg_id)
-            c_num = card_data.get("card_number", "") if card_data else ""
-            card_mask = f"**** **** **** {c_num[-4:]}" if len(c_num) >= 4 else "Saved Bank Card"
-            total_card_amount = amount + 17.70
-            prompt_text = (
-                "🚨 <b>CONFIRMED SEATS OPEN ON IRCTC — PAYMENT ACTION REQUIRED</b> 🚨\n"
+        # Balance is verified & sufficient -> Direct 0-second auto-booking execution!
+        new_bal = round(cur_bal - total_ewallet_amount, 2)
+        await storage.save_user_ewallet_balance(tg_id, new_bal)
+
+        # Dispatch live reservation via IRCTCLiveEngine
+        from irctc_live_engine import IRCTCLiveEngine
+        irctc_pwd = (await storage.get_decrypted_credentials(tg_id))[1] or ""
+        ew_pin = (await storage.get_decrypted_ewallet(tg_id)) or ""
+
+        engine = IRCTCLiveEngine(headless=True)
+        live_result = await engine.execute_live_booking(
+            irctc_username=irctc_user or "guest",
+            irctc_password=irctc_pwd,
+            ewallet_pin=ew_pin,
+            train_number=task["train_number"],
+            journey_date=task["journey_date"],
+            coach_class=task["coach_class"],
+            source_stn=task["source_stn"],
+            dest_stn=task["dest_stn"],
+            passengers=task.get("passengers", [{}]),
+            quota=task.get("booking_quota", "GN")
+        )
+
+        if not live_result.get("success"):
+            err_msg = live_result.get("error", "IRCTC automated reservation did not complete.")
+            fail_notice = (
+                "⚠️ <b>IRCTC Live Booking Notice</b> ⚠️\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
-                f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
-                f"• <b>Passenger:</b> {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
-                f"• <b>Berth Preference:</b> {p_info.get('berth', 'No Preference')}\n"
-                f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
-                f"• <b>Payable Amount:</b> <code>₹{total_card_amount:.2f}</code> (incl. IRCTC fee)\n"
-                f"• <b>Card Rail:</b> <code>{card_mask}</code>\n\n"
-                "💳 <b>HOW TO COMPLETE YOUR PAYMENT:</b>\n"
-                f"1️⃣ Open official <a href='https://www.irctc.co.in/nget/train-search'>irctc.co.in</a> under account <code>{user_display}</code>.\n"
-                "2️⃣ Complete payment on the official IRCTC card payment gateway using bank 3D-Secure OTP.\n\n"
-                "⚠️ <b>STRICT FINANCIAL SAFETY NOTICE:</b>\n"
-                "Because real money is involved, this bot <b>NEVER assumes or fakes payment success</b>.\n"
-                "Once approved, tap <b>'✅ I Have Paid on IRCTC — Verify Booking'</b> below and provide your <b>10-digit CRIS PNR</b> to verify with Indian Railways!"
+                f"• <b>Status:</b> Confirmed seats were detected, but the live reservation attempt encountered:\n"
+                f"  <code>{err_msg}</code>\n\n"
+                "🛡️ <b>Strict Zero-Fake Policy:</b> No fake PNR was generated and no e-Wallet balance was deducted.\n"
+                "The Sniper Watchdog remains active and will retry on subsequent seat openings."
             )
-            await self.bot_app.bot.send_message(chat_id=chat_id, text=prompt_text, reply_markup=keyboard, parse_mode="HTML")
+            await self.bot_app.bot.send_message(chat_id=chat_id, text=fail_notice, parse_mode="HTML")
+            return
 
-        else:
-            # UPI / Instant Pay Mode
-            upi_id = task.get("upi_id") or "Your Registered UPI App"
-            from live_payment_service import generate_upi_intent_uri, generate_dynamic_qr_url
-            total_upi_amount = amount + 17.70
-            upi_uri, txn_ref = generate_upi_intent_uri(total_upi_amount, task_id)
-            qr_code_url = generate_dynamic_qr_url(upi_uri, size=350)
-
-            prompt_text = (
-                "🚨 <b>CONFIRMED SEATS OPEN ON IRCTC — PAYMENT ACTION REQUIRED</b> 🚨\n"
+        cris_pnr = live_result.get("pnr")
+        if not cris_pnr:
+            err_notice = (
+                "⚠️ <b>IRCTC Live Booking Notice</b> ⚠️\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"• <b>Train:</b> <code>{task['train_number']}</code> ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
-                f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
-                f"• <b>Passenger:</b> {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
-                f"• <b>Berth Preference:</b> {p_info.get('berth', 'No Preference')}\n"
-                f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
-                f"• <b>Payable Amount:</b> <code>₹{total_upi_amount:.2f}</code> (Official IRCTC Fare + fee)\n"
-                f"• <b>Destination UPI VPA:</b> <code>{upi_id}</code>\n\n"
-                "📲 <b>HOW TO COMPLETE YOUR PAYMENT:</b>\n"
-                f"1️⃣ <b>Check Your UPI App:</b> Open PhonePe, Google Pay, Paytm, or BHIM linked to <code>{upi_id}</code>.\n"
-                f"2️⃣ <b>Approve IRCTC Request:</b> Check for the payment request from <b>IRCTC</b> (or scan QR code) for <b>₹{total_upi_amount:.2f}</b> and authorize with your UPI PIN.\n"
-                "3️⃣ <b>Direct IRCTC Checkout:</b> You can also complete it on <a href='https://www.irctc.co.in/nget/train-search'>irctc.co.in</a>.\n\n"
-                "⚠️ <b>STRICT FINANCIAL SAFETY NOTICE:</b>\n"
-                "Because real money is involved, this bot <b>NEVER assumes or fakes payment success</b>.\n"
-                "After paying, tap <b>'✅ I Have Paid on IRCTC — Verify Booking'</b> below and enter your <b>10-digit CRIS PNR Number</b> from your IRCTC SMS to verify!"
+                "IRCTC session finished, but an authentic 10-digit CRIS PNR could not be intercepted from the confirmation screen.\n"
+                "No fake PNR was generated. Please verify directly under your IRCTC 'Booked Ticket History'."
             )
-            try:
-                await self.bot_app.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=qr_code_url,
-                    caption=prompt_text,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                print(f"[WARN] Failed to send photo: {e}")
-                await self.bot_app.bot.send_message(
-                    chat_id=chat_id,
-                    text=prompt_text,
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
+            await self.bot_app.bot.send_message(chat_id=chat_id, text=err_notice, parse_mode="HTML")
+            return
+
+        p_berth = p_info.get("berth", "34 (LB)")
+        p_name = p_info.get("name", "Passenger")
+        p_age = int(p_info.get("age", 25))
+        p_gender = p_info.get("gender", "M")
+
+        booked_quota = task.get("booking_quota", "GN")
+        quota_label = "Tatkal (TQ)" if booked_quota == "TQ" else "General (GN) / Charting Release"
+
+        booking_data = {
+            "pnr": cris_pnr,
+            "train_number": task["train_number"],
+            "train_name": task.get("train_name", "SUPERFAST EXP"),
+            "source": task["source_stn"],
+            "dest": task["dest_stn"],
+            "journey_date": task["journey_date"],
+            "coach_class": task["coach_class"],
+            "quota": booked_quota,
+            "fare": float(amount),
+            "passengers": [{
+                "name": p_name,
+                "age": p_age,
+                "gender": p_gender,
+                "berth": p_berth,
+                "status": "CNF"
+            }],
+            "payment_method": f"Official IRCTC eWallet (Auto-Debited Rs. {total_ewallet_amount:.2f})",
+            "txn_id": f"EW-{random.randint(10000000, 99999999)}"
+        }
+
+        await storage.save_user_booking(tg_id, booking_data)
+        await storage.delete_task(task_id)
+
+        success_msg = (
+            "⚡⚡🎯 <b>CONFIRMED SEATS BOOKED DIRECTLY ON IRCTC!</b> 🎯⚡⚡\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"• <b>Official CRIS PNR:</b> <code>{cris_pnr}</code>\n"
+            f"• <b>Train:</b> {task['train_number']} ({task['coach_class']}) - {task.get('train_name', 'EXP')}\n"
+            f"• <b>Route:</b> {task['source_stn']} ➔ {task['dest_stn']} | <b>Date:</b> {task['journey_date']}\n"
+            f"• <b>Quota:</b> <code>{quota_label}</code>\n"
+            f"• <b>Passenger:</b> {p_name} ({p_age} yrs, {p_gender})\n"
+            f"• <b>Coach / Berth:</b> S4 / {p_berth}\n"
+            f"• <b>Status:</b> <b>CONFIRMED RESERVATION (CNF)</b>\n"
+            f"• <b>IRCTC Account:</b> <code>{user_display}</code>\n"
+            f"• <b>Payment Rail:</b> <code>Official IRCTC eWallet</code> (Direct Auto-Debit)\n"
+            f"• <b>Amount Debited:</b> <code>₹{total_ewallet_amount:.2f}</code> (Fare: ₹{amount:.2f} + Fee: ₹11.80)\n"
+            f"• <b>Remaining eWallet Balance:</b> <code>₹{new_bal:.2f}</code>\n\n"
+            "✅ <b>Zero Fake PNR Guarantee:</b> Authentic reservation confirmed on Indian Railways NGET.\n"
+            "🔗 <b>Verify Live on IndianRail:</b> <a href='https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html'>indianrail.gov.in</a>\n"
+        )
+
+        await self.bot_app.bot.send_message(chat_id=chat_id, text=success_msg, parse_mode="HTML")
+        return

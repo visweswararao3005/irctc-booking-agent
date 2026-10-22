@@ -96,27 +96,21 @@ async def run_bot():
             # 1. Booking flow entry points
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.cmd_book),
-            CommandHandler("sniper", bot.cmd_book),
             MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start)$", re.IGNORECASE)), bot.start_booking),
-            MessageHandler(filters.Regex(re.compile(r"^(book|sniper|book ticket|start booking)$", re.IGNORECASE)), bot.cmd_book),
+            MessageHandler(filters.Regex(re.compile(r"^(book|book ticket|start booking)$", re.IGNORECASE)), bot.cmd_book),
             MessageHandler(filters.Regex(ROUTE_PATTERN), bot.handle_route),
             MessageHandler(filters.Regex(TRAIN_PATTERN), bot.handle_out_of_state_train_selection),
             CallbackQueryHandler(bot.cmd_book, pattern=r"^info_start_booking$"),
 
             # 2. Account setup entry points
             CommandHandler("change_account", bot.start_change_account),
-            CommandHandler("set_account", bot.start_change_account),
             CallbackQueryHandler(bot.start_change_account, pattern=r"^btn_link_irctc$"),
 
             # 3. Wallet setup entry points
             CommandHandler("change_wallet", bot.start_change_wallet),
-            CommandHandler("set_wallet", bot.start_change_wallet),
 
             # 4. Profile setup entry points
             CommandHandler("create_profile", bot.start_create_profile),
-            CommandHandler("set_profile", bot.start_create_profile),
-            CommandHandler("new_profile", bot.start_create_profile),
-            CommandHandler("add_passenger", bot.start_create_profile),
             CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
         ],
         states={
@@ -128,7 +122,6 @@ async def run_bot():
             ],
             bot.STATE_TRAIN_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_train_select)],
             bot.STATE_CLASS_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_class_select)],
-            bot.STATE_PAYMENT_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_payment_select)],
             bot.STATE_PASSENGER_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_choice)],
             bot.STATE_PASSENGER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_name)],
             bot.STATE_PASSENGER_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_passenger_age)],
@@ -156,30 +149,18 @@ async def run_bot():
             CommandHandler("cancel", bot.cancel_booking),
             CommandHandler("start", bot.start_booking),
             CommandHandler("book", bot.cmd_book),
-            CommandHandler("sniper", bot.cmd_book),
             CommandHandler("create_profile", bot.start_create_profile),
-            CommandHandler("set_profile", bot.start_create_profile),
-            CommandHandler("new_profile", bot.start_create_profile),
-            CommandHandler("add_passenger", bot.start_create_profile),
-            CommandHandler("change_account", bot.start_change_account),
-            CommandHandler("set_account", bot.start_change_account),
-            CommandHandler("change_wallet", bot.start_change_wallet),
-            CommandHandler("set_wallet", bot.start_change_wallet),
-            CommandHandler("profile", bot.cmd_profile),
-            CommandHandler("passenger", bot.cmd_profile),
-            CommandHandler("account", bot.cmd_account),
-            CommandHandler("wallet", bot.cmd_wallet),
-            CommandHandler("ewallet", bot.cmd_wallet),
-            CommandHandler("balance", bot.cmd_wallet),
             CommandHandler("remove_passenger", bot.start_remove_passenger),
-            CommandHandler("delete_passenger", bot.start_remove_passenger),
             CommandHandler("reset_profile", bot.cmd_reset_profile),
+            CommandHandler("change_account", bot.start_change_account),
+            CommandHandler("account", bot.cmd_account),
             CommandHandler("reset_account", bot.cmd_reset_account),
+            CommandHandler("change_wallet", bot.start_change_wallet),
+            CommandHandler("wallet", bot.cmd_wallet),
             CommandHandler("reset_wallet", bot.cmd_reset_wallet),
-            CommandHandler("info", bot.cmd_info),
-            CommandHandler("help", bot.cmd_help),
-            CommandHandler("task", bot.cmd_tasks),
+            CommandHandler("profile", bot.cmd_profile),
             CommandHandler("tasks", bot.cmd_tasks),
+            CommandHandler("help", bot.cmd_help),
             CommandHandler("verify", bot.cmd_verify_pnr),
             CallbackQueryHandler(bot.start_create_profile, pattern=r"^btn_create_profile$"),
             CallbackQueryHandler(bot.start_change_account, pattern=r"^btn_link_irctc$"),
@@ -189,40 +170,33 @@ async def run_bot():
             CallbackQueryHandler(bot.cmd_wallet, pattern=r"^info_view_wallet$"),
             CallbackQueryHandler(bot.cmd_help, pattern=r"^info_view_help$"),
             MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start)$", re.IGNORECASE)), bot.start_booking),
-            MessageHandler(filters.Regex(re.compile(r"^(book|sniper|book ticket|start booking)$", re.IGNORECASE)), bot.cmd_book),
+            MessageHandler(filters.Regex(re.compile(r"^(book|book ticket|start booking)$", re.IGNORECASE)), bot.cmd_book),
         ],
         allow_reentry=True
     )
 
-    # Register handlers
+    # Register handlers - Exactly 1 command per operation
     app.add_handler(main_conv)
     app.add_handler(CommandHandler("start", bot.start_booking))
     app.add_handler(CommandHandler("book", bot.cmd_book))
-    app.add_handler(CommandHandler("sniper", bot.cmd_book))
     app.add_handler(CommandHandler("create_profile", bot.start_create_profile))
-    app.add_handler(CommandHandler("set_profile", bot.start_create_profile))
-    app.add_handler(CommandHandler("new_profile", bot.start_create_profile))
-    app.add_handler(CommandHandler("add_passenger", bot.start_create_profile))
-    app.add_handler(CommandHandler("info", bot.cmd_info))
-    app.add_handler(CommandHandler("help", bot.cmd_help))
-    app.add_handler(CommandHandler("task", bot.cmd_tasks))
-    app.add_handler(CommandHandler("tasks", bot.cmd_tasks))
-    app.add_handler(CommandHandler("profile", bot.cmd_profile))
-    app.add_handler(CommandHandler("passenger", bot.cmd_profile))
     app.add_handler(CommandHandler("remove_passenger", bot.start_remove_passenger))
-    app.add_handler(CommandHandler("delete_passenger", bot.start_remove_passenger))
     app.add_handler(CommandHandler("reset_profile", bot.cmd_reset_profile))
-    app.add_handler(MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking))
+    app.add_handler(CommandHandler("profile", bot.cmd_profile))
     app.add_handler(CommandHandler("account", bot.cmd_account))
+    app.add_handler(CommandHandler("change_account", bot.start_change_account))
     app.add_handler(CommandHandler("reset_account", bot.cmd_reset_account))
     app.add_handler(CommandHandler("wallet", bot.cmd_wallet))
-    app.add_handler(CommandHandler("ewallet", bot.cmd_wallet))
-    app.add_handler(CommandHandler("balance", bot.cmd_wallet))
+    app.add_handler(CommandHandler("change_wallet", bot.start_change_wallet))
     app.add_handler(CommandHandler("reset_wallet", bot.cmd_reset_wallet))
+    app.add_handler(CommandHandler("tasks", bot.cmd_tasks))
+    app.add_handler(CommandHandler("help", bot.cmd_help))
     app.add_handler(CommandHandler("verify", bot.cmd_verify_pnr))
+    app.add_handler(CommandHandler("cancel", bot.cancel_booking))
+    app.add_handler(MessageHandler(filters.Regex(re.compile(r"^(hi|hello|start|book)$", re.IGNORECASE)), bot.start_booking))
     app.add_handler(CallbackQueryHandler(bot.handle_callback_query))
 
-    # Fallback message handler (used for OTP capture & general messages)
+    # Fallback message handler (used for PNR capture & free-text input)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_potential_otp))
 
     async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

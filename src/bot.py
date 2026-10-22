@@ -27,7 +27,6 @@ global_scheduler = None  # Injected in main.py
     STATE_DATE,
     STATE_TRAIN_SELECT,
     STATE_CLASS_SELECT,
-    STATE_PAYMENT_SELECT,
     STATE_PASSENGER_CHOICE,
     STATE_PASSENGER_NAME,
     STATE_PASSENGER_AGE,
@@ -35,26 +34,18 @@ global_scheduler = None  # Injected in main.py
     STATE_PASSENGER_BERTH,
     STATE_IRCTC_USER,
     STATE_IRCTC_PASS,
-    STATE_UPI_ID,
-    STATE_CARD_NUM,
-    STATE_CARD_EXP,
-    STATE_CARD_CVV,
-    STATE_CARD_NAME,
     STATE_EWALLET_PIN,
     STATE_CONFIRM
-) = range(19)
+) = range(13)
 
 # Conversation States for Account Setup/Change
-STATE_SET_USER, STATE_SET_PASS = range(19, 21)
-
-# Conversation States for Standalone Card Setup/Change
-STATE_SET_CARD_NUM, STATE_SET_CARD_EXP, STATE_SET_CARD_CVV, STATE_SET_CARD_NAME = range(21, 25)
+STATE_SET_USER, STATE_SET_PASS = range(13, 15)
 
 # Conversation States for Standalone Wallet Setup/Change
-STATE_SET_WALLET_PIN = 25
+STATE_SET_WALLET_PIN = 15
 
 # Conversation States for Standalone Profile Setup (/create_profile)
-STATE_PROF_NAME, STATE_PROF_AGE, STATE_PROF_GENDER, STATE_PROF_BERTH = range(26, 30)
+STATE_PROF_NAME, STATE_PROF_AGE, STATE_PROF_GENDER, STATE_PROF_BERTH = range(16, 20)
 
 
 # ----------------- Safe Messaging Helper -----------------
@@ -490,223 +481,8 @@ async def handle_create_profile_berth(update: Update, context: ContextTypes.DEFA
     await safe_reply(update.message, "👇 Quick Actions:", reply_markup=kb, parse_mode="Markdown")
     return ConversationHandler.END
 
-# ----------------- Payment Card Management Handlers -----------------
-
-async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View stored payment card details for this specific chat."""
-    tg_id = update.effective_user.id
-    card = await storage.get_decrypted_card(tg_id)
-
-    if not card or not card.get("card_number"):
-        await update.message.reply_text(
-            "ℹ️ *No Payment Card Configured*\n\n"
-            "You haven't linked a credit/debit card yet.\n"
-            "Use `/change_card` to link your card for auto-booking.",
-            parse_mode="Markdown"
-        )
-        return
-
-    num = card.get("card_number", "")
-    card_mask = f"**** **** **** {num[-4:]}" if len(num) >= 4 else "****"
-    await update.message.reply_text(
-        f"💳 *Your Linked Payment Card:*\n\n"
-        f"• *Card Number:* `{card_mask}`\n"
-        f"• *Expiry:* `{card.get('card_expiry', 'MM/YY')}`\n"
-        f"• *CVV:* `•••`\n"
-        f"• *Holder Name:* `{card.get('card_holder', 'Cardholder')}`\n"
-        f"• *Status:* Encrypted & Active (AES-256)\n\n"
-        "Commands:\n"
-        "• `/change_card` - Update your card details\n"
-        "• `/reset_card` - Remove your card from storage",
-        parse_mode="Markdown"
-    )
-
-async def cmd_reset_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Wipes stored payment card for this chat."""
-    tg_id = update.effective_user.id
-    success = await storage.reset_user_card(tg_id)
-    if success:
-        await update.message.reply_text("🗑️ *Payment card details have been completely removed.*", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("ℹ️ No active payment card was saved for this chat.")
-
-async def start_change_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Begins the card update conversation."""
-    await update.message.reply_text(
-        "💳 *Payment Card Setup*\n\n"
-        "Please enter your *16-Digit Card Number*:\n"
-        "_(This is securely encrypted at rest for this chat using AES-256)_",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return STATE_SET_CARD_NUM
-
-async def handle_set_card_num(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    num = update.message.text.strip().replace(" ", "").replace("-", "")
-    if not num.isdigit() or len(num) < 12:
-        await update.message.reply_text("❌ Please enter a valid 12-19 digit card number:")
-        return STATE_SET_CARD_NUM
-    context.user_data["new_card_num"] = num
-    await update.message.reply_text("Enter *Card Expiry* in `MM/YY` format (e.g. `12/28`):", parse_mode="Markdown")
-    return STATE_SET_CARD_EXP
-
-async def handle_set_card_exp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    exp = update.message.text.strip()
-    if not re.match(r"^\d{2}/\d{2}$", exp):
-        await update.message.reply_text("❌ Please enter valid expiry as `MM/YY` (e.g. `12/28`):")
-        return STATE_SET_CARD_EXP
-    context.user_data["new_card_exp"] = exp
-    await update.message.reply_text("Enter *CVV* (3 or 4 digits):", parse_mode="Markdown")
-    return STATE_SET_CARD_CVV
-
-async def handle_set_card_cvv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    cvv = update.message.text.strip()
-    if not cvv.isdigit() or len(cvv) not in [3, 4]:
-        await update.message.reply_text("❌ Please enter a valid 3 or 4 digit CVV:")
-        return STATE_SET_CARD_CVV
-    context.user_data["new_card_cvv"] = cvv
-    await update.message.reply_text("Enter *Cardholder Name* as printed on card:", parse_mode="Markdown")
-    return STATE_SET_CARD_NAME
-
-async def handle_set_card_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name = update.message.text.strip()
-    tg_id = update.effective_user.id
-    u_data = context.user_data
-
-    await storage.save_user_card(
-        telegram_id=tg_id,
-        card_number=u_data["new_card_num"],
-        card_expiry=u_data["new_card_exp"],
-        card_cvv=u_data["new_card_cvv"],
-        card_holder=name
-    )
-
-    masked_num = f"**** **** **** {u_data['new_card_num'][-4:]}"
-    await update.message.reply_text(
-        f"✅ *Payment Card Saved Successfully!*\n\n"
-        f"• *Card:* `{masked_num}`\n"
-        f"• *Expiry:* `{u_data['new_card_exp']}`\n"
-        f"• *Holder:* `{name}`\n\n"
-        "Your card is securely encrypted with AES-256 and ready for auto-booking.",
-        parse_mode="Markdown"
-    )
-    return ConversationHandler.END
-
-# ----------------- UPI Validation & Management Handlers -----------------
-
-def validate_and_normalize_upi(raw_input: str) -> tuple[bool, Optional[str], Optional[str], Optional[str]]:
-    """
-    Validates and normalizes UPI IDs and 10-digit mobile numbers.
-    Returns: (is_valid, normalized_upi, detected_app, error_msg)
-    """
-    cleaned = raw_input.strip()
-    if not cleaned:
-        return False, None, None, "Input cannot be empty."
-
-    # App map for popular Indian PSP handles
-    KNOWN_HANDLES = {
-        "paytm": "Paytm",
-        "ybl": "PhonePe (Yes Bank)",
-        "ibl": "PhonePe (ICICI Bank)",
-        "axl": "PhonePe (Axis Bank)",
-        "okaxis": "Google Pay (Axis Bank)",
-        "okhdfcbank": "Google Pay (HDFC Bank)",
-        "okicici": "Google Pay (ICICI Bank)",
-        "oksbi": "Google Pay (SBI)",
-        "apl": "Amazon Pay",
-        "upi": "BHIM / Central NPCI",
-        "barodampay": "Bank of Baroda",
-        "cred": "CRED UPI",
-        "postbank": "India Post Payments Bank (IPPB)",
-        "kotak": "Kotak Mahindra Bank",
-        "indus": "IndusInd Bank",
-        "idbi": "IDBI Bank",
-        "federal": "Federal Bank",
-        "waaxis": "WhatsApp Pay",
-        "waicici": "WhatsApp Pay",
-        "wahdfcbank": "WhatsApp Pay",
-        "wasbi": "WhatsApp Pay"
-    }
-
-    # Case 1: Standard UPI VPA format (contains '@')
-    if "@" in cleaned:
-        parts = cleaned.split("@")
-        if len(parts) != 2:
-            return False, None, None, "A valid UPI ID must have exactly one '@' symbol (e.g. `username@paytm`)."
-
-        handle, psp = parts[0].strip().lower(), parts[1].strip().lower()
-
-        # Handle validation: 2-64 chars, alphanumeric with dots, hyphens, underscores
-        if not re.match(r"^[a-zA-Z0-9.\-_]{2,64}$", handle):
-            return False, None, None, "Invalid username part before '@'. Must contain 2 to 64 letters, numbers, or dots/underscores."
-
-        # PSP validation: 2-32 chars, letters/numbers
-        if not re.match(r"^[a-zA-Z0-9.\-_]{2,32}$", psp):
-            return False, None, None, "Invalid bank/app handle after '@' (e.g. `paytm`, `ybl`, `okaxis`)."
-
-        detected_app = KNOWN_HANDLES.get(psp, f"{psp.upper()} Bank Gateway")
-        normalized = f"{handle}@{psp}"
-        return True, normalized, detected_app, None
-
-    # Case 2: Phone number format (without '@')
-    # Strip spaces, hyphens, plus signs, dots
-    phone_clean = re.sub(r"[\s\-\+\.]", "", cleaned)
-
-    # Strip country code +91 or 91 if present and total length is 12
-    if phone_clean.startswith("91") and len(phone_clean) == 12:
-        phone_clean = phone_clean[2:]
-    elif phone_clean.startswith("0") and len(phone_clean) == 11:
-        phone_clean = phone_clean[1:]
-
-    # Check 10-digit Indian mobile number
-    if len(phone_clean) == 10 and phone_clean.isdigit():
-        if phone_clean[0] not in ["6", "7", "8", "9"]:
-            return False, None, None, "Invalid Indian mobile number: Standard Indian mobile numbers must start with 6, 7, 8, or 9 (e.g. `9876543210`)."
-
-        normalized = f"{phone_clean}@upi"
-        return True, normalized, "Central NPCI UPI Number Mapper (BHIM / PhonePe / GPay / Paytm)", None
-
-    # Invalid input with digits
-    if phone_clean.isdigit():
-        return False, None, None, f"Mobile number has {len(phone_clean)} digits. Indian mobile numbers must be exactly 10 digits."
-
-    return False, None, None, "Invalid format. Enter a 10-digit mobile number (e.g. `9876543210`) or a UPI ID (e.g. `name@paytm`, `name@ybl`, `name@okaxis`)."
-
-async def cmd_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View stored UPI ID for this specific chat."""
-    tg_id = update.effective_user.id
-    upi_id = await storage.get_decrypted_upi(tg_id)
-
-    if not upi_id:
-        await update.message.reply_text(
-            "ℹ️ *No UPI ID Configured*\n\n"
-            "You haven't linked a UPI ID yet.\n"
-            "When booking a ticket, select *UPI / Instant Pay* to link your UPI address.",
-            parse_mode="Markdown"
-        )
-        return
-
-    is_valid, normalized_upi, detected_app, _ = validate_and_normalize_upi(upi_id)
-    app_info = f" ({detected_app})" if detected_app else ""
-    await update.message.reply_text(
-        f"📱 *Your Configured UPI Address:*\n\n"
-        f"• *UPI ID:* `{upi_id}`{app_info}\n"
-        f"• *Status:* Verified & Active (AES-256 Encrypted)\n\n"
-        "Commands:\n"
-        "• `/reset_upi` - Remove your saved UPI ID",
-        parse_mode="Markdown"
-    )
-
-async def cmd_reset_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Wipes stored UPI ID for this chat."""
-    tg_id = update.effective_user.id
-    success = await storage.reset_user_upi(tg_id)
-    if success:
-        await update.message.reply_text("🗑️ *Saved UPI address has been deleted from storage.*", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("ℹ️ No active UPI ID was saved for this chat.")
-
 # ----------------- IRCTC eWallet Management Handlers -----------------
+
 
 async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """View or update stored IRCTC eWallet configuration and balance for this specific chat."""
@@ -862,23 +638,23 @@ async def handle_set_wallet_pin(update: Update, context: ContextTypes.DEFAULT_TY
 # ----------------- /info and /tasks Command Handlers -----------------
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Explains how the IRCTC AI Booking Agent & Seat Sniper works end-to-end with full details."""
+    """Explains how the IRCTC AI Booking Agent works end-to-end with pure IRCTC e-Wallet."""
     info_text = (
         "🤖 *IRCTC AI AUTONOMOUS SEAT SNIPER — SYSTEM ARCHITECTURE*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🎯 *HOW THE AGENT WORKS (END-TO-END FLOW):*\n\n"
-        "1️⃣ *Live Train Discovery & Earliest Departure Sorting:*\n"
+        "1️⃣ *Live Train Discovery & Chronological Sorting:*\n"
         "• Send `/start`, `/book`, or your route (e.g. `KJM-MAS` or `MAS-NLR`).\n"
         "• The agent queries live Indian Railways network feeds directly.\n"
         "• Trains running on your selected journey date are sorted chronologically by earliest departure time.\n\n"
         "2️⃣ *Official Railway Quotas & Live Fares:*\n"
         "• For each train, the bot parses official reserved coach quotas (Field 62) allocated by Indian Railways.\n"
-        "• Live fares (Field 41) are fetched with zero synthetic or fake pricing.\n\n"
+        "• Live fares (Field 41) are fetched with zero synthetic pricing.\n\n"
         "3️⃣ *Exclusive IRCTC e-Wallet Rail & Pre-Flight Balance Gate:*\n"
         "• Indian Railways tickets sell out in seconds during chart unfreezing. To prevent gateway/OTP delays, this agent operates **exclusively on IRCTC e-Wallet**.\n"
         "• At sniper arming time, the bot calculates: `Ticket Base Fare + ₹11.80` (Official IRCTC eWallet fee of ₹10 + 18% GST).\n"
         "• If balance is insufficient, it blocks activation, outputs the exact shortfall, and gives you the direct deposit link.\n\n"
-        "4️⃣ *Smart Charting Watchdog (Zero 15-Minute Spam):*\n"
+        "4️⃣ *Smart Charting Watchdog (Zero Spam):*\n"
         "• For future bookings, the bot enters `SCHEDULED SLEEP` mode—no continuous spam loops.\n"
         "• 1 hour before chart preparation, the watchdog wakes up and dynamically accelerates polling: **60s** at T-60m ➔ **30s** at T-30m ➔ **10s** at strike time.\n"
         "• The sniper **NEVER** books Waiting List (WL) tickets.\n\n"
@@ -886,9 +662,9 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• The exact millisecond confirmed berths open (`CNF` or `CURR_AVBL`), the agent strikes with 0.0s latency.\n"
         "• Uses your linked IRCTC credentials and AES-256 encrypted eWallet PIN to auto-debit your IRCTC deposit.\n"
         "• **Official IRCTC SMS:** Indian Railways sends the official booking confirmation SMS to your registered mobile phone (Sender: `IRCTCi`).\n"
-        "• **Telegram Delivery:** The bot sends your confirmed 10-digit CRIS PNR and the official Electronic Reservation Slip (ERS) PDF document directly into this chat!\n\n"
+        "• **Telegram Delivery:** The bot delivers your confirmed 10-digit CRIS PNR and reservation details directly into this chat!\n\n"
         "6️⃣ *Multi-User Concurrency & Data Isolation:*\n"
-        "• Every Telegram user is 100% independent. $N$ chats can simultaneously monitor and book $N$ different trains in parallel with zero cross-talk.\n\n"
+        "• Every Telegram user is 100% independent. Parallel chats monitor and book different trains simultaneously with zero cross-talk.\n\n"
         "7️⃣ *Bank-Grade Security (AES-256):*\n"
         "• All credentials, passwords, and PINs are encrypted at rest with AES-256 Fernet."
     )
@@ -907,30 +683,30 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📖 *IRCTC AI BOOKING AGENT — COMMAND DIRECTORY*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚆 *BOOKING & SNIPING:*\n"
-        "• `/start` (or `/book`, `/sniper`) — Search trains & start seat sniper booking flow.\n"
-        "• `/tasks` (or `/task`) — View all active seat sniper watchdog tasks currently in progress.\n"
-        "• `/cancel` — Instantly abort any active booking conversation or input step.\n\n"
-        "💼 *IRCTC e-WALLET (EXCLUSIVELY ACTIVE):*\n"
-        "• `/wallet` (or `/ewallet`, `/balance`) — View linked IRCTC account, balance, PIN status & top-up link.\n"
-        "• `/wallet balance <amount>` — Record/update deposited eWallet balance (e.g. `/wallet balance 1500`).\n"
-        "• `/change_wallet` (or `/set_wallet`) — Enter or update your 4-6 digit IRCTC eWallet Transaction PIN.\n"
-        "• `/reset_wallet` — Securely erase your stored eWallet PIN from encrypted storage.\n\n"
+        "🚆 *RESERVATION & MONITORING:*\n"
+        "• `/start` — Open interactive booking dashboard & start reservation flow.\n"
+        "• `/book` — Search trains & trigger booking flow directly.\n"
+        "• `/tasks` — View all active seat sniper watchdog tasks.\n"
+        "• `/cancel` — Instantly abort current operation or setup flow.\n\n"
+        "💼 *IRCTC e-WALLET (DIRECT AUTO-DEBIT RAIL):*\n"
+        "• `/wallet` — View e-Wallet balance, deposit status, and top-up link.\n"
+        "• `/wallet balance <amount>` — Record/update deposited e-Wallet balance (e.g. `/wallet balance 1500`).\n"
+        "• `/change_wallet` — Set or update your 4-digit IRCTC e-Wallet Transaction PIN.\n"
+        "• `/reset_wallet` — Securely erase your stored e-Wallet PIN.\n\n"
         "🔐 *IRCTC CREDENTIALS:*\n"
-        "• `/account` — View your linked IRCTC Username.\n"
-        "• `/change_account` (or `/set_account`) — Link or update your IRCTC Username & Password.\n"
-        "• `/reset_account` — Permanently delete your IRCTC login credentials from this chat.\n\n"
+        "• `/account` — View linked IRCTC username.\n"
+        "• `/change_account` — Link or update your IRCTC username & password.\n"
+        "• `/reset_account` — Delete linked IRCTC credentials from storage.\n\n"
         "👤 *PASSENGER PROFILE:*\n"
-        "• `/profile` (or `/passenger`) — View your Master Passenger List & linked account status.\n"
-        "• `/create_profile` (or `/add_passenger`) — Add traveler details to your Master List (Name, Age, Gender, Berth).\n"
-        "• `/remove_passenger` (or `/delete_passenger`) — Selectively remove a passenger with confirmation check.\n"
-        "• `/reset_profile` — Erase all saved profile data (passenger, credentials, wallet) to start fresh.\n\n"
-        "🔍 *SYSTEM & VERIFICATION:*\n"
-        "• `/info` — Comprehensive end-to-end architectural guide & official IRCTC charting rules.\n"
-        "• `/help` — Display this full command directory and usage instructions.\n"
-        "• `/verify <pnr>` — Live verification of any 10-digit Indian Railways CRIS PNR against PRS network.\n\n"
-        "💡 *PRO-TIP FOR INSTANT BOOKINGS:*\n"
-        "Keep your IRCTC account linked (`/change_account`), default passenger saved (`/create_profile`), and balance updated (`/wallet balance <amount>`). When seats release, booking completes automatically in 0 seconds with zero intervention!"
+        "• `/profile` — View saved passenger master profile.\n"
+        "• `/create_profile` — Add or update passenger details (Name, Age, Gender, Berth).\n"
+        "• `/remove_passenger` — Selectively remove a passenger from master list.\n"
+        "• `/reset_profile` — Clear saved passenger profile.\n\n"
+        "🔍 *VERIFICATION & HELP:*\n"
+        "• `/verify <pnr>` — Live verification of 10-digit CRIS PNR against PRS network.\n"
+        "• `/help` — Display system architecture and command directory.\n\n"
+        "💡 *PRO-TIP FOR ZERO-LATENCY RESERVATION:*\n"
+        "Link your IRCTC account (`/change_account`), save your passenger profile (`/create_profile`), set your transaction PIN (`/change_wallet`), and keep your deposit updated (`/wallet balance <amount>`). When seats release, the agent reserves them with 0.0s delay!"
     )
     keyboard = InlineKeyboardMarkup([
         [
@@ -1957,86 +1733,6 @@ async def handle_class_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     return STATE_PASSENGER_NAME
 
-async def handle_payment_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    if is_cancel_command(text):
-        return await cancel_booking(update, context)
-
-    if is_back_command(text):
-        # Re-display classes
-        class_options = context.user_data.get("class_options", [])
-        keyboard = [[f"{c['class_code']} (Rs. {int(c['fare'])})"] for c in class_options]
-        keyboard.append(["⬅️ Back", "❌ Cancel"])
-        await update.message.reply_text(
-            f"🎟️ *Select Coach Class for Train {context.user_data.get('train_number')}:*",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode="Markdown"
-        )
-        return STATE_CLASS_SELECT
-
-    t_lower = text.lower()
-    fare = int(context.user_data.get("fare", 240))
-
-    if "ewallet" in t_lower or "wallet" in t_lower:
-        context.user_data["payment_method"] = "IRCTC eWallet"
-        info_banner = (
-            "💼 *Payment Mode: IRCTC eWallet*\n\n"
-            f"⚠️ *Wallet Balance Advisory:* Please maintain sufficient funds (minimum *₹{fare + 18}* including fees) "
-            "in your IRCTC e-Wallet prior to booking.\n"
-            "Funds will be deducted instantly with zero gateway latency when seats become available!"
-        )
-    elif "card" in t_lower:
-        context.user_data["payment_method"] = "Credit / Debit Card"
-        info_banner = (
-            "💳 *Payment Mode: Credit / Debit Card*\n\n"
-            "📲 *Payment Notification Advisory:* When seats become available, an automated checkout will trigger. "
-            "A 3D-Secure Bank OTP or mobile transaction notification will be sent directly to your registered mobile phone. "
-            "Please keep your mobile handy to authenticate!"
-        )
-    elif "upi" in t_lower:
-        context.user_data["payment_method"] = "UPI / Instant Pay"
-        info_banner = (
-            "📱 *Payment Mode: UPI / Instant Pay*\n\n"
-            "📲 *UPI Collect Notification Advisory:* When seats open, a payment collect push notification "
-            "will be sent to your mobile UPI app (GPay / PhonePe / Paytm / BHIM). "
-            "Please approve the notification on your phone within the timeout window to confirm your ticket!"
-        )
-    else:
-        await update.message.reply_text(
-            "❌ Please select one of the payment options from the keyboard below, or tap '⬅️ Back':"
-        )
-        return STATE_PAYMENT_SELECT
-
-    tg_id = update.effective_user.id
-    saved = await storage.get_passenger_profile(tg_id)
-    if saved and saved.get("name"):
-        context.user_data["saved_profile"] = saved
-        choice_kb = [
-            [f"✅ Use Saved: {saved['name']} ({saved['age']}, {saved['gender']})"],
-            ["➕ Enter New Passenger Details"],
-            ["⬅️ Back", "❌ Cancel"]
-        ]
-        await update.message.reply_text(
-            f"{info_banner}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "👤 *Saved Passenger Profile Found:*\n\n"
-            f"• *Name:* {saved['name']}\n"
-            f"• *Age:* {saved['age']} yrs | *Gender:* {saved['gender']}\n"
-            f"• *Berth Preference:* {saved.get('berth', 'No Preference')}\n\n"
-            "👉 Tap below to use this saved passenger in 1-click or enter new details:",
-            reply_markup=ReplyKeyboardMarkup(choice_kb, resize_keyboard=True),
-            parse_mode="Markdown"
-        )
-        return STATE_PASSENGER_CHOICE
-
-    await update.message.reply_text(
-        f"{info_banner}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "👤 Please enter the *Passenger Full Name*:",
-        reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
-        parse_mode="Markdown"
-    )
-    return STATE_PASSENGER_NAME
 
 async def handle_passenger_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
@@ -2251,42 +1947,23 @@ async def check_credentials_and_next(update: Update, context: ContextTypes.DEFAU
 
     # User already has IRCTC account saved!
     context.user_data["irctc_user"] = username
-    return await check_card_or_confirm(update, context)
+    return await check_wallet_or_confirm(update, context)
 
-async def check_card_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def check_wallet_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = update.effective_user.id
     context.user_data["payment_method"] = "IRCTC eWallet"
     context.user_data["ewallet_on_file"] = True
-    return await render_confirmation(update, context)
-
-
-async def handle_inline_upi_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    upi_text = update.message.text.strip()
-    if is_cancel_command(upi_text):
-        return await cancel_booking(update, context)
-
-    is_valid, normalized_upi, detected_app, err_msg = validate_and_normalize_upi(upi_text)
-    if not is_valid:
-        await update.message.reply_text(
-            f"❌ *Invalid UPI / Mobile Number!*\n\n"
-            f"• *Issue Detected:* {err_msg}\n\n"
-            "👉 Please enter a valid 10-digit Indian mobile number (e.g. `9876543210`) or your full UPI ID (e.g. `name@paytm`, `name@ybl`, `name@okaxis`):",
+    ew_pin = await storage.get_decrypted_ewallet(tg_id)
+    if not ew_pin:
+        await safe_reply(
+            update.message,
+            "💼 *IRCTC e-Wallet PIN Required*\n\n"
+            "To enable 0.0s direct auto-debit reservation on IRCTC NGET, please enter your *4-digit IRCTC e-Wallet Transaction PIN*:\n"
+            "_(Encrypted with AES-256 for this chat; you can update it anytime via `/change_wallet`)_",
+            reply_markup=ReplyKeyboardRemove(),
             parse_mode="Markdown"
         )
-        return STATE_UPI_ID
-
-    tg_id = update.effective_user.id
-    context.user_data["upi_id"] = normalized_upi
-    await storage.save_user_upi(tg_id, normalized_upi)
-    await update.message.reply_text(
-        f"✅ *UPI Address Successfully Verified & Saved!*\n\n"
-        f"• *Linked UPI ID:* `{normalized_upi}`\n"
-        f"• *Detected App Gateway:* `{detected_app}`\n"
-        f"• *Security Status:* Encrypted with AES-256 for this chat\n\n"
-        "📲 *Payment Push Dispatch Notice:*\n"
-        f"When seats open at chart preparation, an instant payment collect push request will be dispatched to `{normalized_upi}` on `{detected_app}` so you can approve it with 1 tap!",
-        parse_mode="Markdown"
-    )
+        return STATE_EWALLET_PIN
     return await render_confirmation(update, context)
 
 async def handle_inline_ewallet_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2327,49 +2004,7 @@ async def handle_inline_irctc_pass(update: Update, context: ContextTypes.DEFAULT
 
     await storage.save_user_credentials(tg_id, irctc_user, irctc_pass)
     await update.message.reply_text("🔐 IRCTC credentials encrypted and saved for this chat!")
-    return await check_card_or_confirm(update, context)
-
-async def handle_inline_card_num(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    num = update.message.text.strip().replace(" ", "").replace("-", "")
-    if not num.isdigit() or len(num) < 12:
-        await update.message.reply_text("❌ Please enter a valid 12-19 digit card number:")
-        return STATE_CARD_NUM
-    context.user_data["temp_card_num"] = num
-    await update.message.reply_text("Enter *Card Expiry* in `MM/YY` format (e.g. `12/28`):", parse_mode="Markdown")
-    return STATE_CARD_EXP
-
-async def handle_inline_card_exp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    exp = update.message.text.strip()
-    if not re.match(r"^\d{2}/\d{2}$", exp):
-        await update.message.reply_text("❌ Please enter valid expiry as `MM/YY` (e.g. `12/28`):")
-        return STATE_CARD_EXP
-    context.user_data["temp_card_exp"] = exp
-    await update.message.reply_text("Enter *CVV* (3 or 4 digits):", parse_mode="Markdown")
-    return STATE_CARD_CVV
-
-async def handle_inline_card_cvv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    cvv = update.message.text.strip()
-    if not cvv.isdigit() or len(cvv) not in [3, 4]:
-        await update.message.reply_text("❌ Please enter a valid 3 or 4 digit CVV:")
-        return STATE_CARD_CVV
-    context.user_data["temp_card_cvv"] = cvv
-    await update.message.reply_text("Enter *Cardholder Name* as printed on card:", parse_mode="Markdown")
-    return STATE_CARD_NAME
-
-async def handle_inline_card_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name = update.message.text.strip()
-    tg_id = update.effective_user.id
-    u_data = context.user_data
-
-    await storage.save_user_card(
-        telegram_id=tg_id,
-        card_number=u_data["temp_card_num"],
-        card_expiry=u_data["temp_card_exp"],
-        card_cvv=u_data["temp_card_cvv"],
-        card_holder=name
-    )
-    await update.message.reply_text("💳 Card details encrypted and saved successfully!")
-    return await render_confirmation(update, context)
+    return await check_wallet_or_confirm(update, context)
 
 async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     u = context.user_data
@@ -3069,9 +2704,6 @@ async def process_pnr_verification(update: Update, context: ContextTypes.DEFAULT
         "txn_id": f"CRIS-{clean_pnr}"
     }
 
-    from ticket_generator import generate_ticket_pdf
-    pdf_path = generate_ticket_pdf(booking_data)
-
     success_msg = (
         "⚡⚡🎯 <b>CONFIRMED BOOKING VERIFIED ON INDIAN RAILWAYS!</b> 🎯⚡⚡\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -3082,19 +2714,12 @@ async def process_pnr_verification(update: Update, context: ContextTypes.DEFAULT
         f"• <b>Passenger:</b> {p_info.get('name', 'Passenger')} ({p_info.get('age', 25)} yrs, {p_info.get('gender', 'M')})\n"
         f"• <b>Berth Preference:</b> {p_info.get('berth', 'No Preference')}\n"
         f"• <b>CRIS Status:</b> {verif_res.get('status', 'CONFIRMED')}\n\n"
-        "✅ <b>Zero Fake Verification Guarantee:</b> Real money transfer processed solely via official IRCTC channels.\n"
-        "🔗 <b>Verify Live on IndianRail:</b> <a href='https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html'>indianrail.gov.in</a>\n\n"
-        "📄 <b>Official Electronic Reservation Slip (ERS) attached below:</b> 👇"
+        "✅ <b>Zero Fake Verification Guarantee:</b> Real reservation processed solely via official IRCTC e-Wallet.\n"
+        "🔗 <b>Verify Live on IndianRail:</b> <a href='https://www.indianrail.gov.in/enquiry/PNR/PnrEnquiry.html'>indianrail.gov.in</a>\n"
+        "📱 <b>SMS Notification:</b> Official confirmation SMS has been dispatched to your IRCTC registered mobile."
     )
 
     await update.message.reply_text(success_msg, parse_mode="HTML")
-
-    with open(pdf_path, "rb") as doc:
-        await update.message.reply_document(
-            document=doc,
-            filename=f"IRCTC_Confirmed_{clean_pnr}.pdf",
-            caption=f"Official Indian Railways ERS Booking Slip (PNR: {clean_pnr})."
-        )
 
     # Clean up task
     if target_task.get("task_id"):
@@ -3120,8 +2745,7 @@ async def cmd_verify_pnr(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Listens for 10-digit CRIS PNR submissions, Bank OTPs, or 12-digit UTR references.
-    Strictly verifies payment against Indian Railways without any fake verification.
+    Listens for 10-digit CRIS PNR submissions, button clicks, routes, or numeric wallet balance updates.
     """
     chat_id = update.effective_chat.id
     tg_id = update.effective_user.id
@@ -3136,23 +2760,6 @@ async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get("awaiting_pnr_task_id"):
         return await process_pnr_verification(update, context, text)
 
-    # 2. Check if user submitted a 12-digit Bank UTR / UPI Reference Number
-    from live_payment_service import validate_bank_utr
-    is_utr, utr_num, _ = validate_bank_utr(text)
-    if is_utr:
-        await update.message.reply_text(
-            f"💳 <b>Bank UTR / UPI Reference <code>{utr_num}</code> Recorded!</b>\n\n"
-            "⚠️ <i>Because real money is involved, we do not fake payment confirmation.</i>\n\n"
-            "👉 Please enter your <b>10-digit Official CRIS PNR Number</b> from the SMS sent by <b>IRCTC</b> (sender: <code>IRCTCi</code>) to complete verification with Indian Railways:",
-            parse_mode="HTML"
-        )
-        return
-
-    if irctc_svc.is_waiting_for_otp(chat_id):
-        success = irctc_svc.provide_otp(chat_id, text)
-        if success:
-            await update.message.reply_text(f"🔐 Received Payment Authorization `{text}`. Submitting to Bank Gateway...")
-        return
 
     # 1. Check if user clicked a leftover keyboard button from confirmation
     if any(k in text.upper() for k in ["ACTIVATE SEAT SNIPER", "BOOK NOW", "CONFIRM", "BACK"]):

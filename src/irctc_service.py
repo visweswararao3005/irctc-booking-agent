@@ -4,11 +4,7 @@ import random
 import re
 import httpx
 from typing import List, Dict, Any, Optional, Tuple
-from config import CARD_NUMBER, CARD_EXPIRY, CARD_CVV, CARD_HOLDER, OTP_TIMEOUT_SECONDS
 from timezone_utils import IST, now_ist, now_ist_naive, today_ist, time_ist, format_ist_time, format_ist_datetime
-
-# In-memory registry for waiting OTP events: {chat_id: {"future": asyncio.Future, "expires_at": float}}
-_PENDING_OTPS: Dict[int, Dict[str, Any]] = {}
 
 # Standard class base fares for calculation
 BASE_FARES = {
@@ -811,56 +807,7 @@ class IRCTCService:
             "message": "Valid 10-digit CRIS PNR format confirmed."
         }
 
-    # ----------------- Credit Card & OTP Payment Flow -----------------
-
-    async def request_card_payment_and_wait_for_otp(
-        self,
-        chat_id: int,
-        amount: float,
-        prompt_callback,
-        card_info: Optional[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
-        """
-        Waits for user's authorization or Bank OTP for authentic payment verification.
-        """
-        card_num = ""
-        if card_info and card_info.get("card_number"):
-            card_num = card_info["card_number"]
-        elif CARD_NUMBER:
-            card_num = CARD_NUMBER
-
-        card_mask = f"**** **** **** {card_num[-4:]}" if len(card_num) >= 4 else "**** **** **** 8892"
-
-        loop = asyncio.get_running_loop()
-        otp_future = loop.create_future()
-        _PENDING_OTPS[chat_id] = {
-            "future": otp_future,
-            "created_at": now_ist(),
-            "timeout": OTP_TIMEOUT_SECONDS
-        }
-
-        await prompt_callback(
-            chat_id=chat_id,
-            card_mask=card_mask,
-            amount=amount,
-            timeout_sec=OTP_TIMEOUT_SECONDS
-        )
-
-        try:
-            otp_entered = await asyncio.wait_for(otp_future, timeout=float(OTP_TIMEOUT_SECONDS))
-            return {
-                "success": True,
-                "otp": otp_entered,
-                "card_mask": card_mask,
-                "auth_status": "AWAITING_CRIS_PNR"
-            }
-        except asyncio.TimeoutError:
-            return {
-                "success": False,
-                "error": "Payment authorization timed out (no response within 2 minutes). Booking held."
-            }
-        finally:
-            _PENDING_OTPS.pop(chat_id, None)
+    # ----------------- Pure IRCTC eWallet Payment -----------------
 
     async def request_ewallet_payment(
         self,
@@ -875,57 +822,3 @@ class IRCTCService:
             "card_mask": "Official IRCTC eWallet",
             "auth_status": "AWAITING_CRIS_PNR"
         }
-
-    async def request_upi_payment_and_wait(
-        self,
-        chat_id: int,
-        amount: float,
-        prompt_callback
-    ) -> Dict[str, Any]:
-        """
-        Notifies user of official IRCTC payment action and waits for user's confirmation.
-        """
-        loop = asyncio.get_running_loop()
-        otp_future = loop.create_future()
-        _PENDING_OTPS[chat_id] = {
-            "future": otp_future,
-            "created_at": now_ist(),
-            "timeout": OTP_TIMEOUT_SECONDS
-        }
-
-        await prompt_callback(
-            chat_id=chat_id,
-            amount=amount,
-            timeout_sec=OTP_TIMEOUT_SECONDS
-        )
-
-        try:
-            auth_entered = await asyncio.wait_for(otp_future, timeout=float(OTP_TIMEOUT_SECONDS))
-            return {
-                "success": True,
-                "otp": auth_entered,
-                "card_mask": "Official IRCTC UPI Payment",
-                "auth_status": "AWAITING_CRIS_PNR"
-            }
-        except asyncio.TimeoutError:
-            return {
-                "success": False,
-                "error": "Payment confirmation timed out (no response within 2 minutes)."
-            }
-        finally:
-            _PENDING_OTPS.pop(chat_id, None)
-
-    @staticmethod
-    def is_waiting_for_otp(chat_id: int) -> bool:
-        """Check if this chat currently has an active OTP prompt awaiting response."""
-        return chat_id in _PENDING_OTPS and not _PENDING_OTPS[chat_id]["future"].done()
-
-    @staticmethod
-    def provide_otp(chat_id: int, otp_text: str) -> bool:
-        """Feed the user's OTP message from Telegram into the waiting payment future."""
-        if chat_id in _PENDING_OTPS:
-            fut = _PENDING_OTPS[chat_id]["future"]
-            if not fut.done():
-                fut.set_result(otp_text.strip())
-                return True
-        return False

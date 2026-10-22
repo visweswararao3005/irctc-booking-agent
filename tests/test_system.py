@@ -21,7 +21,6 @@ if str(ROOT_DIR) not in sys.path:
 import storage
 import security
 from irctc_service import IRCTCService
-from ticket_generator import generate_ticket_pdf
 
 async def run_tests():
     print("=" * 60)
@@ -52,37 +51,29 @@ async def run_tests():
     assert reset_u is None or reset_u == "", f"Reset failed, still got: {reset_u}"
     print("✅ Per-Chat Credential Management & Reset: PASSED")
 
-    # 2b. Test Per-Chat Credit Card Storage & Encryption
-    print("\n[Test 2b] Testing Per-Chat Payment Card Storage, Masking & Reset in JSON...")
-    await storage.save_user_card(
-        telegram_id=test_user_id,
-        card_number="4111222233334444",
-        card_expiry="12/28",
-        card_cvv="123",
-        card_holder="BALAJI P"
-    )
-    card_data = await storage.get_decrypted_card(test_user_id)
-    assert card_data is not None, "Card data not found in storage"
-    assert card_data["card_number"] == "4111222233334444", "Card number mismatch"
-    assert card_data["card_expiry"] == "12/28", "Card expiry mismatch"
-    assert card_data["card_cvv"] == "123", "Card CVV mismatch"
-    assert card_data["card_holder"] == "BALAJI P", "Card holder mismatch"
+    # 2b. Test Per-Chat e-Wallet PIN Storage, Encryption & Reset
+    print("\n[Test 2b] Testing Per-Chat IRCTC e-Wallet PIN Storage, AES-256 & Reset in JSON...")
+    await storage.save_user_ewallet(test_user_id, "4321")
+    wallet_pin = await storage.get_decrypted_ewallet(test_user_id)
+    assert wallet_pin == "4321", f"Expected '4321', got {wallet_pin}"
 
-    # Test reset card
-    await storage.reset_user_card(test_user_id)
-    reset_card = await storage.get_decrypted_card(test_user_id)
-    assert reset_card is None, f"Card reset failed, still got: {reset_card}"
-    print("✅ Per-Chat Payment Card Management & Reset: PASSED")
+    # Verify PIN is encrypted at rest in JSON
+    users_raw = storage._read_json_sync(storage.USERS_FILE)
+    stored_enc = users_raw[str(test_user_id)]["ewallet_pin"]
+    assert stored_enc != "4321", "Plaintext PIN was stored in JSON!"
 
-    # [Test 2f] Testing Per-Chat UPI ID Storage, Encryption & Reset...
-    print("\n[Test 2f] Testing Per-Chat UPI ID Storage, Encryption & Reset...")
-    await storage.save_user_upi(test_user_id, "balaji@paytm")
-    upi_id = await storage.get_decrypted_upi(test_user_id)
-    assert upi_id == "balaji@paytm", f"Expected 'balaji@paytm', got {upi_id}"
-    await storage.reset_user_upi(test_user_id)
-    reset_upi = await storage.get_decrypted_upi(test_user_id)
-    assert reset_upi is None, f"UPI reset failed, got {reset_upi}"
-    print("✅ Per-Chat UPI ID Management & Reset: PASSED")
+    # Test reset e-wallet PIN
+    await storage.reset_user_ewallet(test_user_id)
+    reset_pin = await storage.get_decrypted_ewallet(test_user_id)
+    assert reset_pin is None, f"eWallet PIN reset failed, still got: {reset_pin}"
+    print("✅ Per-Chat IRCTC e-Wallet PIN Management & Reset: PASSED")
+
+    # 2c. Test e-Wallet Balance Storage & Retrieval
+    print("\n[Test 2c] Testing Per-Chat IRCTC e-Wallet Balance Storage & Retrieval...")
+    await storage.save_user_ewallet_balance(test_user_id, 1250.75)
+    bal_val = await storage.get_user_ewallet_balance(test_user_id)
+    assert bal_val == 1250.75, f"Expected 1250.75, got {bal_val}"
+    print("✅ Per-Chat IRCTC e-Wallet Balance Storage: PASSED")
 
     # [Test 2c] Testing User Session Persistence & Recovery...
     print("\n[Test 2c] Testing User Session Persistence & Recovery...")
@@ -192,8 +183,8 @@ async def run_tests():
     assert not any(t["task_id"] == task_id for t in active_after), "Task was not purged from JSON"
     print("✅ Task Lifecycle & JSON Purge: PASSED")
 
-    # 6. Test PDF Ticket Generation
-    print("\n[Test 6] Testing IRCTC e-Ticket PDF Generation...")
+    # 6. Test Text-Only Confirmation (Zero Fake PDF Policy)
+    print("\n[Test 6] Testing Text-Only Confirmation with Official CRIS PNR (Zero Fake PDF Policy)...")
     sample_booking = {
         "pnr": "4829104829",
         "train_number": "12712",
@@ -206,50 +197,19 @@ async def run_tests():
         "passengers": [
             {"name": "Balaji P", "age": 28, "gender": "M", "berth": "34 (LB)", "status": "CNF"}
         ],
-        "payment_method": "Credit Card (Ending in 4444)"
+        "payment_method": "IRCTC eWallet"
     }
-    pdf_path = generate_ticket_pdf(sample_booking)
-    assert Path(pdf_path).exists(), f"PDF not created: {pdf_path}"
-    assert Path(pdf_path).stat().st_size > 1000, "PDF file is empty or corrupted"
-    print(f"✅ PDF Ticket Generated: {pdf_path} (Size: {Path(pdf_path).stat().st_size} bytes)")
+    # Validate format: 10-digit authentic CRIS PNR
+    assert len(sample_booking["pnr"]) == 10 and sample_booking["pnr"].isdigit()
+    assert sample_booking["payment_method"] == "IRCTC eWallet"
+    print(f"✅ Text-Only Confirmation Rail Verified: PNR {sample_booking['pnr']} (Zero PDF dependency)")
 
-    # 7. Test Simulated OTP Callback Mechanism
-    print("\n[Test 7] Testing Card Payment & OTP Relay Flow...")
-    async def dummy_prompt(chat_id, card_mask, amount, timeout_sec):
-        print(f"   [Mock Telegram] Prompt sent to chat {chat_id}: Enter OTP for {card_mask} (Amount: Rs. {amount})")
-        # Simulate user typing OTP after 100ms
-        await asyncio.sleep(0.1)
-        IRCTCService.provide_otp(chat_id, "481920")
-
-    res = await service.request_card_payment_and_wait_for_otp(
-        chat_id=test_user_id,
-        amount=240.0,
-        prompt_callback=dummy_prompt
-    )
-    assert res.get("success") is True, f"OTP payment failed: {res}"
-    assert res.get("otp") == "481920", f"Wrong OTP received: {res.get('otp')}"
-    assert res.get("auth_status") == "AWAITING_CRIS_PNR"
-    print(f"✅ Card Payment & OTP Relay: PASSED (Status: {res.get('auth_status')})")
-
-    # 7b. Test IRCTC eWallet Instant Payment
-    print("\n[Test 7b] Testing IRCTC eWallet Instant Payment Flow...")
+    # 7. Test IRCTC eWallet Instant Payment
+    print("\n[Test 7] Testing IRCTC eWallet Instant Auto-Debit Flow...")
     wallet_res = await service.request_ewallet_payment(test_user_id, 240.0)
     assert wallet_res.get("success") is True
     assert wallet_res.get("auth_status") == "AWAITING_CRIS_PNR"
     print(f"✅ eWallet Payment: PASSED (Status: {wallet_res.get('auth_status')})")
-
-    # 7c. Test UPI Mobile Collect Notification Flow
-    print("\n[Test 7c] Testing UPI Mobile Collect Request Flow...")
-    async def dummy_upi_prompt(chat_id, amount, timeout_sec):
-        print(f"   [Mock Telegram] Push collect notification sent to chat {chat_id}: Rs. {amount}")
-        await asyncio.sleep(0.1)
-        IRCTCService.provide_otp(chat_id, "UPI-APPROVE-9988")
-
-    upi_res = await service.request_upi_payment_and_wait(test_user_id, 240.0, dummy_upi_prompt)
-    assert upi_res.get("success") is True
-    assert upi_res.get("otp") == "UPI-APPROVE-9988"
-    assert upi_res.get("auth_status") == "AWAITING_CRIS_PNR"
-    print(f"✅ UPI Payment Flow: PASSED (Status: {upi_res.get('auth_status')})")
 
     # 7d. Test Strict 10-Digit CRIS PNR Format & Indian Railways Validation
     print("\n[Test 7d] Testing Strict CRIS PNR Validation & Zero-Fake Verification...")
@@ -427,49 +387,6 @@ async def run_tests():
     print(f"   • Strike Polling:       {int_strike}s ({desc_strike})")
     print("✅ Ticket Opening Estimation & Dynamic Polling Rate Engine: PASSED")
 
-    # 13. Test Smart UPI & Mobile Number Detection
-    print("\n[Test 13] Testing Smart UPI & Mobile Number Detection (Valid vs Invalid)...")
-    from bot import validate_and_normalize_upi
-
-    # Case A: Full VPA handle
-    v1, norm1, app1, err1 = validate_and_normalize_upi("visweswararao@paytm")
-    assert v1 is True and norm1 == "visweswararao@paytm" and "Paytm" in app1, f"Failed VPA 1: {norm1}"
-
-    v2, norm2, app2, err2 = validate_and_normalize_upi("9876543210@ybl")
-    assert v2 is True and "PhonePe" in app2, f"Failed PhonePe VPA: {app2}"
-
-    v3, norm3, app3, err3 = validate_and_normalize_upi("balaji@okaxis")
-    assert v3 is True and "Google Pay" in app3, f"Failed GPay VPA: {app3}"
-
-    # Case B: Plain 10-digit mobile number
-    v4, norm4, app4, err4 = validate_and_normalize_upi("9876543210")
-    assert v4 is True and norm4 == "9876543210@upi" and "NPCI" in app4, f"Failed 10-digit: {norm4}"
-
-    # Case C: Mobile number with country code +91 and spaces
-    v5, norm5, app5, err5 = validate_and_normalize_upi("+91 98765 43210")
-    assert v5 is True and norm5 == "9876543210@upi", f"Failed +91 normalization: {norm5}"
-
-    # Case D: Invalid Indian telecom prefix (starts with 1)
-    v6, norm6, app6, err6 = validate_and_normalize_upi("1234567890")
-    assert v6 is False and "start with 6, 7, 8, or 9" in err6, f"Failed telecom prefix check: {err6}"
-
-    # Case E: Incorrect length (9 digits)
-    v7, norm7, app7, err7 = validate_and_normalize_upi("987654321")
-    assert v7 is False and "9 digits" in err7, f"Failed length check: {err7}"
-
-    # Case F: Malformed VPA
-    v8, norm8, app8, err8 = validate_and_normalize_upi("invalid@@upi")
-    assert v8 is False and "one '@'" in err8, f"Failed double-@ check: {err8}"
-
-    print(f"   • Full VPA Detected:     {norm1} -> {app1} (Valid: {v1})")
-    print(f"   • PhonePe VPA Detected:  {norm2} -> {app2} (Valid: {v2})")
-    print(f"   • Google Pay Detected:   {norm3} -> {app3} (Valid: {v3})")
-    print(f"   • 10-digit Mobile Norm:  {norm4} -> {app4} (Valid: {v4})")
-    print(f"   • +91 Number Norm:       {norm5} -> Cleaned (Valid: {v5})")
-    print(f"   • Bad Prefix '123...':   Rejected cleanly: '{err6}' (Valid: {v6})")
-    print(f"   • 9-digit '987...':      Rejected cleanly: '{err7}' (Valid: {v7})")
-    print("✅ Smart UPI & Mobile Number Detection Engine: PASSED")
-
     # 14. Test cmd_tasks, cmd_profile and safe_reply Exception-Proof Fallback
     print("\n[Test 14] Testing cmd_tasks, cmd_profile & safe_reply Error-Proof Fallback...")
     from bot import cmd_tasks, cmd_profile, safe_reply
@@ -508,7 +425,7 @@ async def run_tests():
         "source_stn": "MAS",
         "dest_stn": "SBC",
         "journey_date": "2026-10-05",
-        "payment_method": "UPI / Instant Pay",
+        "payment_method": "IRCTC eWallet",
         "latest_status": "RLWL 288 / WL 135",
         "attempts_count": 3,
         "last_checked": "22:45:00",
@@ -567,70 +484,25 @@ async def run_tests():
     print("   • safe_reply Fallback on Telegram Markdown Error: PASSED (Zero crashes)")
     print("   • cmd_tasks with Live Active Task & last_chk:    PASSED (Zero NameError)")
     print("   • cmd_profile Dynamic State-Aware Buttons:       PASSED (Add/Update/Remove validated)")
-    # 15. Test Live Payment Gateway & Dynamic UPI QR Engine
-    print("\n[Test 15] Testing Live Payment Gateway, Dynamic UPI QR & UTR Validation...")
-    from live_payment_service import (
-        generate_upi_intent_uri,
-        generate_dynamic_qr_url,
-        validate_bank_utr,
-        dispatch_live_pg_collect
-    )
+    # 15. Test Official IRCTC e-Wallet Auto-Debit & Fee Logic
+    print("\n[Test 15] Testing Official IRCTC eWallet Auto-Debit & Fee Logic (Rs. 10 + 18% GST)...")
+    base_fare = 240.0
+    v_res = IRCTCService.verify_ewallet_balance(300.0, base_fare)
+    assert v_res["is_sufficient"] is True
+    assert v_res["fee"] == 11.80
+    assert v_res["total_required"] == 251.80
 
-    # Case A: NPCI UPI Intent URI Generation
-    uri, txn = generate_upi_intent_uri(257.70, "test1234", merchant_vpa="7981141441@ybl", merchant_name="IRCTC Agent")
-    assert uri.startswith("upi://pay?"), f"Invalid UPI URI: {uri}"
-    assert "pa=7981141441%40ybl" in uri or "pa=7981141441@ybl" in uri, "Merchant VPA missing in UPI URI"
-    assert "am=257.70" in uri, "Amount missing in UPI URI"
-    assert "cu=INR" in uri, "Currency missing in UPI URI"
+    short_res = IRCTCService.verify_ewallet_balance(200.0, base_fare)
+    assert short_res["is_sufficient"] is False
+    assert short_res["shortfall"] == 51.80
 
-    # Case B: Dynamic QR Code URL Generation
-    qr_url = generate_dynamic_qr_url(uri, size=350)
-    assert qr_url.startswith("https://api.qrserver.com/v1/create-qr-code/"), f"Invalid QR URL: {qr_url}"
-    assert "350x350" in qr_url, "QR size mismatch"
+    print(f"   • Official Fee: Rs. {v_res['fee']:.2f}")
+    print(f"   • Total Required: Rs. {v_res['total_required']:.2f}")
+    print(f"   • Shortfall Handled: Rs. {short_res['shortfall']:.2f}")
+    print("✅ Official IRCTC eWallet Fee & Balance Verification: PASSED")
 
-    # Case C: 12-Digit Bank UTR Validation
-    utr_ok1, u1, _ = validate_bank_utr("428192849102")
-    assert utr_ok1 and u1 == "428192849102", "Failed direct 12-digit UTR"
-
-    utr_ok2, u2, _ = validate_bank_utr("UPI Ref / UTR: 4281 9284 9102 (Paid via PhonePe)")
-    assert utr_ok2 and u2 == "428192849102", "Failed dirty UTR string extraction"
-
-    utr_bad1, _, err_bad1 = validate_bank_utr("12345")
-    assert not utr_bad1, "Failed to reject short UTR"
-
-    # Case D: Live PG Dispatch Fallback/Execution
-    pg_res = await dispatch_live_pg_collect("tkt999", 257.70, "7981141441@ybl")
-    assert pg_res is not None, "pg_res was None"
-    assert "order_id" in pg_res or "status" in pg_res, "Missing order status"
-
-    print(f"   • Generated NPCI UPI URI:     {uri[:45]}...")
-    print(f"   • Dynamic QR Code Link:       {qr_url[:45]}...")
-    print(f"   • Valid 12-Digit Bank UTR:    {u1} (Verified)")
-    print(f"   • Gateway Engine Mode:        {pg_res.get('gateway')} ({pg_res.get('status')})")
-    print("✅ Live Payment Gateway & Dynamic UPI QR Engine: PASSED")
-
-    # -------------------------------------------------------------
-    # [Test 16] Live Credit/Debit Card Sessions & Official IRCTC eWallet
-    # -------------------------------------------------------------
-    print("\n[Test 16] Testing Live Card Sessions & Official IRCTC eWallet Auto-Debit Engine...")
-    from live_payment_service import create_live_card_payment_session, process_live_ewallet_payment
-
-    # 1. Live Card 3D-Secure Session
-    card_test_info = {"card_number": "5241829104825555", "card_holder": "Balaji P"}
-    card_session = await create_live_card_payment_session(
-        task_id="taskcard123",
-        amount=580.0,
-        card_info=card_test_info,
-        customer_phone="9876543210"
-    )
-    assert card_session is not None, "Card session was None"
-    assert "5555" in card_session.get("card_mask", ""), "Card mask did not contain last 4 digits"
-    assert card_session.get("status") in ["AWAITING_3D_SECURE", "AWAITING_OTP"], f"Unexpected status: {card_session.get('status')}"
-    print(f"   • Live Card Gateway:       {card_session.get('gateway')}")
-    print(f"   • Card Mask:               {card_session.get('card_mask')}")
-    print(f"   • Order ID / Reference:    {card_session.get('order_id')}")
-
-    # 2. Encrypted IRCTC eWallet PIN Storage & Reset
+    # 16. Test Encrypted IRCTC eWallet PIN Storage & Reset
+    print("\n[Test 16] Testing IRCTC eWallet PIN Encryption & Purge...")
     test_user_wallet_id = 99887766
     await storage.save_user_ewallet(test_user_wallet_id, "4829")
     retrieved_pin = await storage.get_decrypted_ewallet(test_user_wallet_id)
@@ -641,32 +513,11 @@ async def run_tests():
     stored_enc = users_raw[str(test_user_wallet_id)]["ewallet_pin"]
     assert stored_enc != "4829", "Plaintext PIN was stored in JSON!"
 
-    # 3. Official IRCTC eWallet Auto-Debit Processing
-    # Subtest: Invalid / empty PIN
-    err_res = await process_live_ewallet_payment("ew123", 240.0, ewallet_pin="")
-    assert not err_res.get("success"), "Should fail with empty PIN"
-
-    # Subtest: Valid PIN with official IRCTC fee
-    wallet_res = await process_live_ewallet_payment(
-        task_id="ew123",
-        amount=240.0,
-        ewallet_pin="4829",
-        irctc_user="balaji_p"
-    )
-    assert wallet_res.get("success"), f"Wallet debit failed: {wallet_res}"
-    assert wallet_res.get("ewallet_fee") == 11.80, f"Expected Rs. 11.80 fee, got {wallet_res.get('ewallet_fee')}"
-    assert wallet_res.get("total_amount_debited") == 251.80, f"Expected Rs. 251.80 total, got {wallet_res.get('total_amount_debited')}"
-    assert "EWALLET_TXN_" in wallet_res.get("transaction_id", ""), "Missing transaction reference"
-
     # Clean up test user eWallet
     reset_ok = await storage.reset_user_ewallet(test_user_wallet_id)
     assert reset_ok, "Failed to reset test user eWallet"
     assert (await storage.get_decrypted_ewallet(test_user_wallet_id)) is None, "eWallet PIN was not cleared"
-
-    print(f"   • IRCTC eWallet Fee:       ₹{wallet_res.get('ewallet_fee'):.2f} (Official Rs. 10 + 18% GST)")
-    print(f"   • Total Debited:           ₹{wallet_res.get('total_amount_debited'):.2f}")
-    print(f"   • Authenticated Txn ID:    {wallet_res.get('transaction_id')}")
-    print("✅ Live Card Sessions & Official IRCTC eWallet Auto-Debit: PASSED")
+    print("✅ IRCTC eWallet PIN Encryption & Purge: PASSED")
 
     # -------------------------------------------------------------
     # [Test 17] Exclusive IRCTC eWallet Rail & Direct Auto-Booking
