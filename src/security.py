@@ -8,7 +8,9 @@ KEY_FILE = BASE_DIR / "secret.key"
 def _get_or_create_key() -> bytes:
     """Retrieve existing Fernet key or generate and persist a new one dynamically."""
     if ENCRYPTION_KEY:
-        return ENCRYPTION_KEY.encode()
+        k = ENCRYPTION_KEY.strip().encode()
+        if len(k) == 44:
+            return k
     if KEY_FILE.exists():
         try:
             k = KEY_FILE.read_text().strip().encode()
