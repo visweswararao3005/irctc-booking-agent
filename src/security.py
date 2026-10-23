@@ -38,7 +38,8 @@ def decrypt_text(cipher_text: str) -> str:
         return ""
     try:
         return _cipher.decrypt(cipher_text.encode()).decode()
-    except Exception:
+    except Exception as e:
+        print(f"[Security Warning] Decryption failed: {e}. Master ENCRYPTION_KEY may have changed.")
         return ""
 
 def mask_text(text: str, visible_prefix: int = 3) -> str:
