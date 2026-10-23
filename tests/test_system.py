@@ -457,11 +457,11 @@ async def run_tests():
     button_texts_empty = [b.text for row in empty_kb.inline_keyboard for b in row]
     assert any("Add Passenger" in b for b in button_texts_empty), "Missing 'Add Passenger' in empty profile"
     assert any("Link IRCTC" in b for b in button_texts_empty), "Missing 'Link IRCTC' in empty profile"
-    assert any("Record / Set Balance" in b for b in button_texts_empty), "Missing 'Record / Set Balance' in empty profile"
+    assert any("Fetch Live IRCTC Balance" in b for b in button_texts_empty), "Missing 'Fetch Live IRCTC Balance' in empty profile"
     assert not any("Reset Passenger" in b for b in button_texts_empty), "Found misleading 'Reset Passenger' in empty profile"
     assert not any("Reset IRCTC" in b for b in button_texts_empty), "Found misleading 'Reset IRCTC' in empty profile"
 
-    # Case D: cmd_profile (Populated state: Update / Unlink / Update Balance)
+    # Case D: cmd_profile (Populated state: Update / Unlink / Live Balance)
     await storage.save_passenger_profile(test_user_id, "Balaji", 25, "Male", "Lower Berth (LB)")
     await storage.save_user_credentials(test_user_id, "balaji_irctc", "secretpass")
     await storage.save_user_ewallet_balance(test_user_id, 1500.0)
@@ -477,7 +477,7 @@ async def run_tests():
     button_texts_pop = [b.text for row in populated_kb.inline_keyboard for b in row]
     assert any("Update Passenger" in b for b in button_texts_pop), "Missing 'Update Passenger' in populated profile"
     assert any("Update IRCTC Account" in b for b in button_texts_pop), "Missing 'Update IRCTC Account' in populated profile"
-    assert any("Update Balance" in b for b in button_texts_pop), "Missing 'Update Balance' in populated profile"
+    assert any("Fetch Live IRCTC Balance" in b for b in button_texts_pop), "Missing 'Fetch Live IRCTC Balance' in populated profile"
     assert any("Remove" in b for b in button_texts_pop), "Missing 'Remove' in populated profile"
     assert any("Unlink" in b for b in button_texts_pop), "Missing 'Unlink' in populated profile"
 
@@ -858,15 +858,12 @@ async def run_tests():
     assert remaining_p[0]["name"] == "Harish", f"Expected Harish to remain, got {remaining_p[0]['name']}"
     print("   • Selective Passenger Removal with Confirmation Check: Verified (Visweswara Rao removed, Harish kept)")
 
-    # Step 12: Direct numeric e-Wallet balance update (e.g. typing '300' like in user screenshot)
+    # Step 12: Pure Live e-Wallet Rail - numeric input in route flow directs user to /wallet
     mock_msg_19.text = "300"
     await bot.handle_route(mock_upd_19, mock_ctx_19)
-    assert any("IRCTC e-Wallet Balance Updated" in t for t in mock_msg_19.sent_texts), "Direct balance 300 not intercepted"
-    assert any("₹300.00" in t for t in mock_msg_19.sent_texts), "Balance 300 text mismatch"
-    assert "Please enter valid station codes" not in mock_msg_19.sent_texts[-1], "Incorrect station code error triggered on numeric balance"
-    cur_bal_300 = await storage.get_user_ewallet_balance(test_user_id)
-    assert cur_bal_300 == 300.0, f"Expected 300.0, got {cur_bal_300}"
-    print("   • Direct Numeric Balance Input ('300'): Verified 0 station code error & balance updated")
+    assert any("Live IRCTC e-Wallet Rail Active" in t for t in mock_msg_19.sent_texts), "Live wallet guidance missing on numeric input"
+    assert "Please enter valid station codes" not in mock_msg_19.sent_texts[-1], "Incorrect station code error triggered on numeric input"
+    print("   • Live e-Wallet Guidance on Numbers ('300'): Verified 0 station code crash & direct /wallet guidance provided")
     print("✅ Multi-Flow State Isolation & Seamless Re-entry: PASSED")
 
     # -------------------------------------------------------------

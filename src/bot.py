@@ -485,59 +485,21 @@ async def handle_create_profile_berth(update: Update, context: ContextTypes.DEFA
 
 
 async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View or update stored IRCTC eWallet configuration and balance for this specific chat."""
+    """View stored IRCTC eWallet configuration and scrape live balance directly from IRCTC NGET."""
     tg_id = update.effective_user.id
+    username, password = await storage.get_decrypted_credentials(tg_id)
 
-    # Support /wallet check or /wallet live or /wallet refresh
-    if context and context.args:
-        raw_joined = " ".join(context.args).lower().strip()
-        if any(w in raw_joined for w in ["check", "live", "refresh", "fetch", "scrape"]):
-            return await fetch_and_report_live_wallet(update, context)
+    if not username or not password:
+        await update.message.reply_text(
+            "⚠️ *No IRCTC Credentials Linked!*\n\n"
+            "Your e-Wallet balance is fetched live directly from the official IRCTC portal.\n"
+            "Please link your IRCTC account first using `/change_account` so the agent can log in and scrape your balance automatically.",
+            parse_mode="Markdown"
+        )
+        return
 
-        # Support /wallet balance 1500 or /wallet 1500
-        raw_arg = raw_joined.replace("balance", "").replace("₹", "").replace(",", "").strip()
-        try:
-            val = float(raw_arg)
-            if val >= 0:
-                await storage.save_user_ewallet_balance(tg_id, val)
-                await update.message.reply_text(
-                    f"✅ *IRCTC eWallet Balance Updated!*\n\n"
-                    f"• *Recorded Balance:* `₹{val:.2f}`\n"
-                    f"• *Direct Auto-Debit Ready:* Funds are verified for instant 0-second reservation strikes.\n\n"
-                    "👉 Tap `/book` or return to your booking confirmation to activate Seat Sniper!",
-                    parse_mode="Markdown"
-                )
-                return
-        except ValueError:
-            pass
-
-    pin = await storage.get_decrypted_ewallet(tg_id)
-    irctc_user, _ = await storage.get_decrypted_credentials(tg_id)
-    user_str = irctc_user or "Linked IRCTC Account"
-    cur_bal = await storage.get_user_ewallet_balance(tg_id)
-    masked_pin = ("•" * len(pin)) if pin else "⚠️ Not Set (Use /change_wallet)"
-
-    wallet_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Fetch Live IRCTC Balance Now", callback_data="btn_fetch_live_wallet")],
-        [InlineKeyboardButton("🔗 Open Official IRCTC Deposit", url="https://www.irctc.co.in/nget/deposit-ewallet")]
-    ])
-
-    await update.message.reply_text(
-        f"💼 *Your Linked IRCTC eWallet:*\n\n"
-        f"• *IRCTC Account:* `{user_str}`\n"
-        f"• *Current eWallet Balance:* `₹{cur_bal:.2f}`\n"
-        f"• *Transaction PIN:* `{masked_pin}`\n"
-        f"• *Auto-Debit Status:* {'✅ Ready for 0s Instant Booking' if pin and cur_bal > 0 else '⚠️ Needs PIN or Balance Top-Up'}\n"
-        f"• *Official Fee:* ₹10.00 + 18% GST (₹11.80 per booking)\n\n"
-        "🔗 *Official Deposit Portal:* [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n\n"
-        "🛠️ *Quick Commands & Actions:*\n"
-        "• Tap *'🔄 Fetch Live IRCTC Balance Now'* below to scrape your real deposit\n"
-        "• `/wallet balance <amount>` — Manually update balance (e.g. `/wallet balance 1500`)\n"
-        "• `/change_wallet` — Set or update your 4-6 digit Transaction PIN\n"
-        "• `/reset_wallet` — Remove your eWallet PIN from storage",
-        reply_markup=wallet_kb,
-        parse_mode="Markdown"
-    )
+    # Automatically fetch live e-Wallet balance from official IRCTC NGET
+    return await fetch_and_report_live_wallet(update, context)
 
 async def fetch_and_report_live_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Logs into IRCTC NGET via headless session and fetches real-time e-Wallet deposit balance."""
@@ -557,7 +519,7 @@ async def fetch_and_report_live_wallet(update: Update, context: ContextTypes.DEF
     if not username or not password:
         await status_msg.edit_text(
             "⚠️ *No IRCTC Credentials Linked!*\n\n"
-            "Please link your IRCTC account first using `/account` or `/change_account` so the agent can log into IRCTC NGET.",
+            "Please link your IRCTC account first using `/change_account` so the agent can log into IRCTC NGET.",
             parse_mode="Markdown"
         )
         return
@@ -570,22 +532,32 @@ async def fetch_and_report_live_wallet(update: Update, context: ContextTypes.DEF
         await storage.save_user_ewallet_balance(tg_id, fetched_bal)
         pin = await storage.get_decrypted_ewallet(tg_id)
         auto_ready = "✅ Ready for 0s Instant Booking" if pin and fetched_bal > 0 else "⚠️ Balance updated, but PIN not set (Use /change_wallet)"
+        wallet_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh Live Balance", callback_data="btn_fetch_live_wallet")],
+            [InlineKeyboardButton("🔗 Deposit Funds on IRCTC", url="https://www.irctc.co.in/nget/deposit-ewallet")]
+        ])
         await status_msg.edit_text(
-            f"✅ *Live IRCTC e-Wallet Deposit Scraped Successfully!*\n\n"
+            f"✅ *Live IRCTC e-Wallet Deposit Verified!*\n\n"
             f"• *IRCTC Account:* `{username}`\n"
             f"• *Current Live Balance:* `₹{fetched_bal:.2f}`\n"
             f"• *Auto-Debit Status:* {auto_ready}\n"
             f"• *Verified Source:* Official IRCTC NGET Portal\n\n"
-            "Funds are synced and ready for instant 0-second reservation strikes!",
+            "Funds are synced and verified for instant 0-second reservation strikes!",
+            reply_markup=wallet_kb,
             parse_mode="Markdown"
         )
     else:
         err = live_res.get("error", "Unable to scrape balance.")
         cur_bal = await storage.get_user_ewallet_balance(tg_id)
+        wallet_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Retry Live Check", callback_data="btn_fetch_live_wallet")],
+            [InlineKeyboardButton("🔗 Deposit Funds on IRCTC", url="https://www.irctc.co.in/nget/deposit-ewallet")]
+        ])
         await status_msg.edit_text(
             f"⚠️ *Could not fetch live balance from IRCTC portal:*\n`{err}`\n\n"
-            f"• *Last Recorded Balance:* `₹{cur_bal:.2f}`\n"
-            "You can still update it manually via `/wallet balance <amount>` (e.g. `/wallet balance 1500`).",
+            f"• *Last Synced Balance:* `₹{cur_bal:.2f}`\n"
+            "Please ensure your IRCTC credentials are correct via `/account` or retry shortly.",
+            reply_markup=wallet_kb,
             parse_mode="Markdown"
         )
 
@@ -832,10 +804,10 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     ew_desc = "Active & Linked (AES-256)" if irctc_user else "Linked with IRCTC Account"
-    bal_desc = f"₹{cur_bal:.2f}" if cur_bal > 0 else "₹0.00 (Set via `/wallet balance <amt>`)"
+    bal_desc = f"₹{cur_bal:.2f}" if cur_bal > 0 else "₹0.00 (Fetch live via /wallet)"
     wallet_line = (
         f"• *IRCTC e-Wallet:* {ew_desc}\n"
-        f"• *Recorded Balance:* `{bal_desc}`\n"
+        f"• *Current Balance:* `{bal_desc}`\n"
     )
 
     msg = (
@@ -883,15 +855,10 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
     # 3. IRCTC e-Wallet Row
-    if has_wallet_bal:
-        kb_buttons.append([
-            InlineKeyboardButton("💼 ✏️ Update Balance", callback_data="btn_update_balance"),
-            InlineKeyboardButton("🗑️ Clear", callback_data="reset_profile_wallet")
-        ])
-    else:
-        kb_buttons.append([
-            InlineKeyboardButton("💼 💰 Record / Set Balance", callback_data="btn_update_balance")
-        ])
+    kb_buttons.append([
+        InlineKeyboardButton("🔄 Fetch Live IRCTC Balance", callback_data="btn_fetch_live_wallet"),
+        InlineKeyboardButton("🗑️ Clear PIN", callback_data="reset_profile_wallet")
+    ])
 
     # 4. Global Reset All (only shown if at least one item is saved)
     if has_passengers or has_irctc or has_wallet_bal:
@@ -1237,24 +1204,13 @@ async def handle_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if is_cancel_command(text):
         return await cancel_booking(update, context)
 
-    # 0. Check if user typed a numeric wallet balance or balance command:
-    # (Matches "300", "₹300", "balance 300", "wallet balance 300", "/wallet balance 300", etc.)
-    bal_match = re.match(
-        r"^(?:(?:/wallet\s+balance|wallet\s+balance|/balance|balance)\s+)?(?:₹\s*)?(\d+(?:\.\d{1,2})?)$",
-        raw_text.strip(),
-        flags=re.IGNORECASE
-    )
-    if bal_match or (context.user_data.get("awaiting_balance") and re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", raw_text.strip())):
-        amt_str = bal_match.group(1) if bal_match else re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", raw_text.strip()).group(1)
-        val = float(amt_str)
-        tg_id = update.effective_user.id
-        await storage.save_user_ewallet_balance(tg_id, val)
-        context.user_data.pop("awaiting_balance", None)
+    # If user typed just numbers, gently inform that balance is live from IRCTC and ask for route
+    if raw_text.isdigit():
         await update.message.reply_text(
-            f"✅ *IRCTC e-Wallet Balance Updated!*\n\n"
-            f"• *Recorded Balance:* `₹{val:.2f}`\n"
-            f"• *Direct Auto-Debit Ready:* Funds are pre-verified for instant 0-second reservation strikes.\n\n"
-            "👉 To continue train booking, enter station codes as `SRC-DST` (e.g. `KJM-MAS` or `MAS-NLR`), or manage profile with `/profile`.",
+            "ℹ️ *Live IRCTC e-Wallet Rail Active*\n\n"
+            "Your e-Wallet balance is synchronized live directly from official IRCTC NGET.\n"
+            "• Use `/wallet` to check your live balance\n"
+            "• Enter station codes as `SRC-DST` (e.g. `KJM-MAS` or `MAS-NLR`) to book a train",
             parse_mode="Markdown"
         )
         return STATE_ROUTE
@@ -2068,7 +2024,7 @@ async def render_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     confirm_kb = [
         ["🎯 ACTIVATE SEAT SNIPER (Confirmed Berths Only)"],
-        ["🔄 Check Live IRCTC Balance", "💼 Update eWallet Balance"],
+        ["🔄 Check Live IRCTC Balance"],
         ["⚡ BOOK NOW (Instant Checkout)"],
         ["⬅️ Back", "❌ Cancel"]
     ]
@@ -2109,20 +2065,20 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     bal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare)
 
     # 0. Live e-Wallet Scraping Check via IRCTCLiveEngine
-    if "CHECK LIVE" in ans or "LIVE IRCTC" in ans or "FETCH LIVE" in ans:
+    if "CHECK LIVE" in ans or "LIVE IRCTC" in ans or "FETCH LIVE" in ans or "RE-CHECK" in ans:
         username, password = await storage.get_decrypted_credentials(tg_id)
         if not username or not password:
             await safe_reply(
                 update.message,
                 "⚠️ *No IRCTC Credentials Linked!*\n"
-                "Please save your IRCTC login credentials first using `/wallet login <username> <password>` to fetch your live balance directly.",
+                "Please save your IRCTC login credentials first using `/change_account` to fetch your live balance directly.",
                 parse_mode="Markdown"
             )
             return await render_confirmation(update, context)
 
         await safe_reply(
             update.message,
-            "🔍 *Logging into official IRCTC NGET to check your live e-Wallet balance...*\n_Please hold on a few seconds..._",
+            "🔍 *Logging into official IRCTC NGET to scrape your real-time e-Wallet balance...*\n_Please hold on a few seconds..._",
             parse_mode="Markdown"
         )
         from irctc_live_engine import IRCTCLiveEngine
@@ -2137,7 +2093,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 update.message,
                 f"✅ *Live IRCTC e-Wallet Deposit Verified!*\n\n"
                 f"• *IRCTC User:* `{username}`\n"
-                f"• *Current Balance:* `₹{fetched_bal:.2f}`\n\n"
+                f"• *Current Live Balance:* `₹{fetched_bal:.2f}`\n\n"
                 "Updated journey summary below:",
                 parse_mode="Markdown"
             )
@@ -2146,44 +2102,12 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await safe_reply(
                 update.message,
                 f"⚠️ *Could not fetch live balance from IRCTC portal:*\n`{err}`\n\n"
-                "You can still set your current balance manually by replying with the amount (e.g. `1000`).",
+                "Please check your IRCTC portal deposit status or retry in a few moments.",
                 parse_mode="Markdown"
             )
         return await render_confirmation(update, context)
 
-    # 1. Check if user asked to update balance amount
-    if "UPDATE BALANCE" in ans or "UPDATE EWALLET" in ans:
-        await safe_reply(
-            update.message,
-            "💼 *Update IRCTC eWallet Balance*\n\n"
-            f"• Ticket Base Fare: ₹{fare:.2f}\n"
-            f"• Official IRCTC Fee: ₹11.80 (₹10 + 18% GST)\n"
-            f"• Total Needed: *₹{bal_check['total_required']:.2f}*\n"
-            f"• Current Balance: *₹{cur_bal:.2f}*\n"
-            f"• Shortfall: *₹{bal_check['shortfall']:.2f}*\n\n"
-            "👉 Please top up your deposit at [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet) and reply with your updated balance (e.g. `1000` or `/wallet balance 1000`):",
-            reply_markup=ReplyKeyboardMarkup([["⬅️ Back", "❌ Cancel"]], resize_keyboard=True),
-            parse_mode="Markdown"
-        )
-        return STATE_CONFIRM
-
-    # 2. Check if user typed a numeric value to update balance
-    clean_num = re.sub(r"[^\d.]", "", ans)
-    if clean_num and clean_num.replace(".", "", 1).isdigit() and ("ACTIVATE" not in ans and "BOOK" not in ans and "RE-CHECK" not in ans):
-        try:
-            new_amt = float(clean_num)
-            if new_amt >= 0:
-                await storage.save_user_ewallet_balance(tg_id, new_amt)
-                cur_bal = new_amt
-                bal_check = irctc_svc.verify_ewallet_balance(cur_bal, fare)
-                await update.message.reply_text(
-                    f"✅ *IRCTC eWallet Balance updated to ₹{cur_bal:.2f}!*",
-                    parse_mode="Markdown"
-                )
-        except ValueError:
-            pass
-
-    # 3. Pre-flight Balance Verification Gate
+    # 1. Pre-flight Balance Verification Gate (Live Scraped Balance)
     if not bal_check["is_sufficient"]:
         insufficient_msg = (
             "⚠️ *INSUFFICIENT IRCTC eWALLET BALANCE*\n"
@@ -2191,7 +2115,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"• *Ticket Base Fare:* `₹{bal_check['fare']:.2f}`\n"
             f"• *Official IRCTC Fee:* `₹{bal_check['fee']:.2f}` (₹10 + 18% GST)\n"
             f"• *Total Amount Needed:* `₹{bal_check['total_required']:.2f}`\n"
-            f"• *Current eWallet Balance:* `₹{bal_check['current_balance']:.2f}`\n"
+            f"• *Current Live Balance:* `₹{bal_check['current_balance']:.2f}`\n"
             f"• *Balance Shortfall:* **₹{bal_check['shortfall']:.2f}**\n\n"
             "💼 *Direct Auto-Debit Requirement:*\n"
             "Because Indian Railways berths sell out in seconds during chart unfreezing, "
@@ -2199,13 +2123,11 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Sufficient funds must be maintained in your eWallet before the sniper can be activated.\n\n"
             "👉 *Steps to Activate:*\n"
             f"1️⃣ Recharge at least **₹{bal_check['shortfall']:.2f}** on official IRCTC: [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n"
-            "2️⃣ Reply with your updated balance here (e.g. `1000` or `/wallet balance 1000`).\n"
-            "3️⃣ Tap *'🔄 Check Live IRCTC Balance'* or *'🔄 Re-check Balance & Activate'* below!"
+            "2️⃣ Once recharged, tap *'🔄 Check Live IRCTC Balance'* below to automatically verify your updated deposit!"
         )
         insufficient_kb = [
             ["🔄 Check Live IRCTC Balance", "🔄 Re-check Balance & Activate"],
-            ["💼 Update Balance Amount", "⬅️ Back"],
-            ["❌ Cancel"]
+            ["⬅️ Back", "❌ Cancel"]
         ]
         await safe_reply(
             update.message,
@@ -2562,50 +2484,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "btn_link_irctc":
         return await start_change_account(update, context)
 
-    elif data == "btn_update_balance":
-        try:
-            await query.answer()
-        except Exception:
-            pass
-        context.user_data["awaiting_balance"] = True
-        bal_kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("➕ ₹500", callback_data="quick_bal_500"),
-                InlineKeyboardButton("➕ ₹1,000", callback_data="quick_bal_1000")
-            ],
-            [
-                InlineKeyboardButton("➕ ₹2,000", callback_data="quick_bal_2000"),
-                InlineKeyboardButton("➕ ₹5,000", callback_data="quick_bal_5000")
-            ],
-            [
-                InlineKeyboardButton("🔙 Back to Profile", callback_data="info_view_profile")
-            ]
-        ])
-        bal_prompt = (
-            "💼 *RECORD / UPDATE IRCTC e-WALLET BALANCE*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Tap a quick preset button below to record your balance in 1 tap, or *simply type any custom amount* directly in this chat (e.g. `300` or `1500`).\n\n"
-            "👉 *You can also use:* `/wallet balance <amount>` *(e.g. `/wallet balance 1500`)*\n\n"
-            "🔗 *Official IRCTC Deposit Portal:* [irctc.co.in/nget/deposit-ewallet](https://www.irctc.co.in/nget/deposit-ewallet)\n\n"
-            "✨ *Why this is needed:*\n"
-            "Recording your deposit lets the Seat Sniper pre-verify funds and auto-debit tickets instantly with 0.0s latency!"
-        )
-        effective_msg = update.effective_message
-        if effective_msg:
-            await safe_reply(effective_msg, bal_prompt, reply_markup=bal_kb, parse_mode="Markdown")
-
-    elif data.startswith("quick_bal_"):
-        raw_amt = data.replace("quick_bal_", "")
-        try:
-            amt = float(raw_amt)
-            await storage.save_user_ewallet_balance(update.effective_user.id, amt)
-            try:
-                await query.answer(f"✅ e-Wallet Balance set to ₹{amt:.2f}!", show_alert=True)
-            except Exception:
-                pass
-        except ValueError:
-            pass
-        return await cmd_profile(update, context)
+    elif data in ["btn_update_balance", "btn_fetch_live_wallet"]:
+        return await fetch_and_report_live_wallet(update, context)
 
     elif data == "info_view_profile":
         try:
@@ -2797,25 +2677,6 @@ async def handle_potential_otp(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.clear()
         return await handle_route(update, context)
 
-    # 4. Check if user typed a numeric wallet balance or balance command outside conversation
-    bal_match = re.match(
-        r"^(?:(?:/wallet\s+balance|wallet\s+balance|/balance|balance)\s+)?(?:₹\s*)?(\d+(?:\.\d{1,2})?)$",
-        text,
-        flags=re.IGNORECASE
-    )
-    if bal_match or (context.user_data.get("awaiting_balance") and re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", text)):
-        amt_str = bal_match.group(1) if bal_match else re.match(r"^(?:₹\s*)?(\d+(?:\.\d{1,2})?)$", text).group(1)
-        val = float(amt_str)
-        await storage.save_user_ewallet_balance(tg_id, val)
-        context.user_data.pop("awaiting_balance", None)
-        await update.message.reply_text(
-            f"✅ *IRCTC e-Wallet Balance Updated!*\n\n"
-            f"• *Recorded Balance:* `₹{val:.2f}`\n"
-            f"• *Direct Auto-Debit Ready:* Funds are pre-verified for instant 0-second reservation strikes.\n\n"
-            "👉 Send `/book` to start booking or `/profile` to view saved details.",
-            parse_mode="Markdown"
-        )
-        return
 
     # 5. Intent routing for plain commands sent without slash outside conversation
     lower_text = text.lower().strip()
