@@ -22,6 +22,9 @@ REDIS_URL = os.getenv("REDIS_URL", "").strip()
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
 
+# Browser Automation Mode (Set HEADLESS_BROWSER=true to hide browser, false to view Chrome UI)
+HEADLESS_BROWSER = os.getenv("HEADLESS_BROWSER", "false").strip().lower() in ("true", "1", "yes")
+
 # Local Data Fallback Directory
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)

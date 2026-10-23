@@ -156,8 +156,9 @@ async def _write_store(key_name: str, file_path: Path, data: Dict[str, Any]) -> 
     """
     Write data dictionary.
     When Cloud storage (Upstash Redis) is enabled, Upstash is the EXCLUSIVE
-    single source of truth.
+    single source of truth. Also maintains local mirror file.
     """
+    _write_json_sync(file_path, data)
     redis_key = f"irctc:{key_name}"
     json_str = json.dumps(data, ensure_ascii=False)
 

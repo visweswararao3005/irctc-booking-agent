@@ -358,7 +358,7 @@ class BackgroundBookingWorker:
         irctc_pwd = (await storage.get_decrypted_credentials(tg_id))[1] or ""
         ew_pin = (await storage.get_decrypted_ewallet(tg_id)) or ""
 
-        engine = IRCTCLiveEngine(headless=True)
+        engine = IRCTCLiveEngine()
         live_result = await engine.execute_live_booking(
             irctc_username=irctc_user or "guest",
             irctc_password=irctc_pwd,

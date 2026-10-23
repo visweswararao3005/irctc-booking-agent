@@ -525,7 +525,7 @@ async def fetch_and_report_live_wallet(update: Update, context: ContextTypes.DEF
         return
 
     from irctc_live_engine import IRCTCLiveEngine
-    engine = IRCTCLiveEngine(headless=True)
+    engine = IRCTCLiveEngine()
     live_res = await engine.get_live_ewallet_balance(username, password)
     if live_res.get("success"):
         fetched_bal = live_res["balance"]
@@ -2082,7 +2082,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown"
         )
         from irctc_live_engine import IRCTCLiveEngine
-        engine = IRCTCLiveEngine(headless=True)
+        engine = IRCTCLiveEngine()
         live_res = await engine.get_live_ewallet_balance(username, password)
         if live_res.get("success"):
             fetched_bal = live_res["balance"]
