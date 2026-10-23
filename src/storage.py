@@ -57,18 +57,30 @@ async def _get_redis_client():
     except Exception as e:
         print(f"[Storage Warning] Could not connect to Redis: {e}. Falling back to local storage.")
         _redis_client = None
-        return None
+def is_cloud_storage_enabled() -> bool:
+    """Returns True if Upstash Redis or Cloud Redis is configured."""
+    return bool(REDIS_URL or (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN))
 
 async def _upstash_rest_get(key: str) -> Optional[str]:
+    """Retrieve key value from Upstash Redis via REST API."""
     if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
         return None
     import urllib.request
     try:
-        url = f"{UPSTASH_REDIS_REST_URL.rstrip('/')}/get/{key}"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"})
+        url = UPSTASH_REDIS_REST_URL.rstrip('/')
+        payload = json.dumps(["GET", key]).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
+        )
         loop = asyncio.get_running_loop()
         def _fetch():
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 data = json.loads(resp.read().decode())
                 return data.get("result")
         return await loop.run_in_executor(None, _fetch)
@@ -77,19 +89,25 @@ async def _upstash_rest_get(key: str) -> Optional[str]:
         return None
 
 async def _upstash_rest_set(key: str, value: str) -> bool:
+    """Save key value to Upstash Redis via REST API."""
     if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
         return False
     import urllib.request
     try:
-        url = f"{UPSTASH_REDIS_REST_URL.rstrip('/')}/set/{key}"
-        data_bytes = value.encode("utf-8")
-        req = urllib.request.Request(url, data=data_bytes, headers={
-            "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}",
-            "Content-Type": "application/json"
-        }, method="POST")
+        url = UPSTASH_REDIS_REST_URL.rstrip('/')
+        payload = json.dumps(["SET", key, value]).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
+        )
         loop = asyncio.get_running_loop()
         def _post():
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 res = json.loads(resp.read().decode())
                 return res.get("result") == "OK"
         return await loop.run_in_executor(None, _post)
@@ -98,60 +116,71 @@ async def _upstash_rest_set(key: str, value: str) -> bool:
         return False
 
 async def _read_store(key_name: str, file_path: Path) -> Dict[str, Any]:
-    """Read data dictionary from Cloud Redis or Upstash REST, falling back to local JSON."""
+    """
+    Read data dictionary.
+    When Cloud storage (Upstash Redis) is enabled, Upstash is the EXCLUSIVE
+    single source of truth. Zero local disk fallbacks or ghost reads.
+    """
     redis_key = f"irctc:{key_name}"
 
-    # 1. Try Redis connection
-    r = await _get_redis_client()
-    if r is not None:
-        try:
-            val = await r.get(redis_key)
-            if val:
-                return json.loads(val)
-        except Exception as e:
-            print(f"[Storage] Redis read error for {redis_key}: {e}")
+    if is_cloud_storage_enabled():
+        # 1. Try Redis connection
+        r = await _get_redis_client()
+        if r is not None:
+            try:
+                val = await r.get(redis_key)
+                if val:
+                    return json.loads(val)
+                return {}
+            except Exception as e:
+                print(f"[Storage] Redis read error for {redis_key}: {e}")
+                return {}
 
-    # 2. Try Upstash REST API
-    if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
-        try:
-            val = await _upstash_rest_get(redis_key)
-            if val:
-                return json.loads(val)
-        except Exception as e:
-            print(f"[Storage] Upstash REST read error for {redis_key}: {e}")
+        # 2. Try Upstash REST API
+        if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
+            try:
+                val = await _upstash_rest_get(redis_key)
+                if val:
+                    return json.loads(val)
+                return {}
+            except Exception as e:
+                print(f"[Storage] Upstash REST read error for {redis_key}: {e}")
+                return {}
 
-    # 3. Fallback to local JSON file
-    local_data = _read_json_sync(file_path)
+        return {}
 
-    # Auto-seed Cloud Store from local JSON if cloud is connected but empty
-    if local_data and (r is not None or (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)):
-        await _write_store(key_name, file_path, local_data)
-
-    return local_data
+    # Only when NO cloud storage credentials are configured (e.g. offline testing)
+    return _read_json_sync(file_path)
 
 async def _write_store(key_name: str, file_path: Path, data: Dict[str, Any]) -> None:
-    """Write data dictionary to local file (for fast backup) and sync to Cloud Redis."""
-    # 1. Always keep local file updated as backup/cache
-    _write_json_sync(file_path, data)
-
+    """
+    Write data dictionary.
+    When Cloud storage (Upstash Redis) is enabled, Upstash is the EXCLUSIVE
+    single source of truth.
+    """
     redis_key = f"irctc:{key_name}"
     json_str = json.dumps(data, ensure_ascii=False)
 
-    # 2. Sync to Redis
-    r = await _get_redis_client()
-    if r is not None:
-        try:
-            await r.set(redis_key, json_str)
-            return
-        except Exception as e:
-            print(f"[Storage] Redis write error for {redis_key}: {e}")
+    if is_cloud_storage_enabled():
+        # 1. Sync to Redis
+        r = await _get_redis_client()
+        if r is not None:
+            try:
+                await r.set(redis_key, json_str)
+                return
+            except Exception as e:
+                print(f"[Storage] Redis write error for {redis_key}: {e}")
 
-    # 3. Sync to Upstash REST
-    if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
-        try:
-            await _upstash_rest_set(redis_key, json_str)
-        except Exception as e:
-            print(f"[Storage] Upstash REST write error for {redis_key}: {e}")
+        # 2. Sync to Upstash REST
+        if UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN:
+            try:
+                await _upstash_rest_set(redis_key, json_str)
+            except Exception as e:
+                print(f"[Storage] Upstash REST write error for {redis_key}: {e}")
+        return
+
+    # Only when NO cloud storage credentials are configured (e.g. offline testing)
+    _write_json_sync(file_path, data)
 
 # ----------------- User Management (Per-Chat Credentials) -----------------
 
